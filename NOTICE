@@ -1,0 +1,11 @@
+hanvil bundles third-party material:
+
+proto/services/*.proto — Hedera API (HAPI) protocol buffer definitions.
+  Source: https://github.com/hiero-ledger/hiero-consensus-node
+          hapi/hedera-protobuf-java-api/src/main/proto/services/
+  License: Apache License 2.0. Copyright Hedera Hashgraph, LLC / Hiero, a Series of LF Projects, LLC.
+  Copied unmodified on 2026-09-07 so the gRPC surface compiles offline.
+
+Predefined account keys (src/keys/predefined.rs) are the published development keys of
+hiero-ledger/hiero-local-node (src/configuration/accountConfiguration.json), reproduced so that
+tooling configured for that project works unchanged. They are public and must never hold value.

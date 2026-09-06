@@ -1,0 +1,7 @@
+research/
+target/
+node_modules/
+.harness/
+*.log
+plan.md
+private/
