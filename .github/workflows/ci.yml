@@ -1,0 +1,32 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  rust:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --all-targets
+      - run: cargo build --release
+      - name: boot time budget (100 ms)
+        shell: bash
+        run: |
+          for i in 1 2 3 4 5; do
+            s=$(python3 -c 'import time;print(int(time.time()*1000))')
+            ./target/release/hanvil --port 0 --mirror-port 0 --grpc-port 0 > boot.txt & pid=$!
+            until grep -q "Started in" boot.txt; do sleep 0.005; done
+            e=$(python3 -c 'import time;print(int(time.time()*1000))'); kill $pid
+            echo "boot $((e-s)) ms"; echo $((e-s)) >> times.txt
+          done
+          med=$(sort -n times.txt | sed -n 3p); echo "median $med ms"; test "$med" -le 100

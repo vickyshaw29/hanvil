@@ -1,0 +1,55 @@
+#![forbid(unsafe_code)]
+//! hanvil — a local Hedera network in one binary.
+//!
+//! One in-memory chain, three listeners: JSON-RPC (relay shape), mirror REST, HAPI gRPC.
+//! See docs/code-plan.md for the architecture and .claude/CLAUDE.md for the rules.
+
+mod cli;
+mod evm;
+mod hapi;
+mod keys;
+mod rpc;
+mod state;
+
+use std::sync::Arc;
+use std::time::Instant;
+
+use anyhow::Context as _;
+use clap::Parser;
+use parking_lot::RwLock;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let started = Instant::now();
+    let args = cli::Args::parse();
+    init_tracing(args.silent);
+
+    let chain = state::Chain::genesis(&args.genesis()).context("building genesis state")?;
+    let shared: rpc::Shared = Arc::new(RwLock::new(chain));
+
+    let rpc = rpc::serve(Arc::clone(&shared), &args.host, args.port)
+        .await
+        .context("starting JSON-RPC listener")?;
+
+    if !args.silent {
+        cli::banner(&args, &shared.read(), rpc.local_addr, started.elapsed());
+    }
+
+    tokio::signal::ctrl_c()
+        .await
+        .context("waiting for ctrl-c")?;
+    tracing::info!("shutting down");
+    rpc.task.abort();
+    Ok(())
+}
+
+fn init_tracing(silent: bool) {
+    use tracing_subscriber::EnvFilter;
+    let default = if silent { "off" } else { "hanvil=info" };
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .without_time()
+        .init();
+}
