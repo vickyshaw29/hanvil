@@ -1,13 +1,17 @@
 # hanvil
 
-Anvil for Hedera. One binary, one in-memory chain, three listeners: JSON-RPC on 7546 in the
-shape of the Hedera JSON-RPC relay, mirror-node REST on 5551, HAPI gRPC on 50211. Tooling built
-for hiero-local-node — `@hiero-ledger/sdk`, viem, hardhat, foundry, hedera-harness — connects
-without changes. Same predefined accounts, same ids, same ports.
+A local Hedera network that fits in one binary and starts before you finish typing the next
+command. It listens where hiero-local-node listens — JSON-RPC on 7546, the mirror REST API on
+5551, HAPI gRPC on 50211 — and hands out the same thirty dev accounts with the same ids and keys,
+so `@hiero-ledger/sdk`, viem, hardhat and foundry don't know the difference. Unlike the Docker
+stack, it can take a snapshot of the whole chain and put it back.
 
-Day 0. Boots with the thirty hiero-local-node dev accounts and answers `eth_chainId`,
-`eth_blockNumber`, `eth_getBalance`. Everything else lands this week; the plan is in
-`docs/code-plan.md` and every upstream fact it rests on is in `docs/research.md`.
+I built it so hedera-harness could run its on-chain validation tier without a testnet account,
+without HBAR, and with a clean chain for every repair attempt.
+
+It's early. Today it boots the accounts and answers `eth_chainId`, `eth_blockNumber` and
+`eth_getBalance`. The rest of the week's work is laid out in `docs/code-plan.md`; every claim
+about how Hedera's own tooling behaves is pinned to a file and line in `docs/research.md`.
 
 ```
 cargo run --release
