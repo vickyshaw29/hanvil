@@ -994,14 +994,19 @@ mod tests {
             now: Timestamp::from_secs(1_700_000_000),
         })
         .expect("genesis");
-        let sender: Address = "0x67d8d32e9bf1a9968a5ff53b87d777aa8ebbee69".parse().unwrap();
+        let sender: Address = "0x67d8d32e9bf1a9968a5ff53b87d777aa8ebbee69"
+            .parse()
+            .unwrap();
         assert_eq!(c.balance_by_evm(&sender), Tinybar::from_hbar(10_000));
         let hash = c
             .send_raw(Bytes::from(raw), Timestamp::from_secs(1_700_000_001))
             .expect("transfer executes");
         let tx = c.transaction(&hash).expect("recorded");
         assert!(tx.receipt.success);
-        assert_eq!(c.balance_by_evm(&long_zero_address(EntityId(1002))).0, Tinybar::from_hbar(10_000).0 + 1);
+        assert_eq!(
+            c.balance_by_evm(&long_zero_address(EntityId(1002))).0,
+            Tinybar::from_hbar(10_000).0 + 1
+        );
     }
 
     #[test]

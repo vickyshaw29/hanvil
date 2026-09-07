@@ -275,7 +275,11 @@ mod tests {
         let decoded = decode_signed(&raw(LEGACY)).unwrap();
         assert_eq!(format!("{:#x}", decoded.from), SIGNER);
         assert_eq!(decoded.env.nonce, 0);
-        assert_eq!(decoded.env.value, U256::from(1), "10^10 weibar is one tinybar");
+        assert_eq!(
+            decoded.env.value,
+            U256::from(1),
+            "10^10 weibar is one tinybar"
+        );
         assert_eq!(decoded.gas_price, Tinybar(71));
         assert_eq!(decoded.env.gas_price, 71);
         assert_eq!(decoded.env.chain_id, Some(298));
