@@ -5,6 +5,7 @@ use std::fmt;
 use alloy_primitives::Address;
 use serde::{Deserialize, Serialize};
 
+use super::time::Timestamp;
 use crate::evm::units::{Tinybar, long_zero_address};
 
 /// Hedera entity id in shard 0, realm 0: `0.0.N`.
@@ -77,6 +78,10 @@ pub struct Account {
     pub deleted: bool,
     /// Account memo.
     pub memo: String,
+    /// When the account came into being. Genesis accounts carry the boot time; an account created
+    /// by a transfer carries that transaction's consensus timestamp. The mirror reports it as
+    /// `created_timestamp` (`openapi.yml:2004`).
+    pub created_at: Timestamp,
     /// Private key, kept only for predefined dev accounts so the banner can print it.
     pub private_key_hex: Option<String>,
 }

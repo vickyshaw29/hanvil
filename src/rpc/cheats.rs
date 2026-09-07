@@ -56,7 +56,7 @@ pub fn call(
             let address = parse_address(p(0))?;
             let balance = Tinybar::from_weibar_exact(parse_quantity(p(1), "balance")?)
                 .map_err(|e| RpcError::invalid_params(e.to_string()))?;
-            chain.set_balance(address, balance);
+            chain.set_balance(address, balance, now);
             Ok(Value::Null)
         }
         "anvil_setCode" => {

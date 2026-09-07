@@ -3,7 +3,7 @@
 //! Public by design; they must never hold value.
 
 use crate::evm::units::Tinybar;
-use crate::state::{Account, EntityId, FIRST_USER_ID};
+use crate::state::{Account, EntityId, FIRST_USER_ID, Timestamp};
 
 use super::{Error, decode_hex, ecdsa_public, ed25519_public};
 
@@ -61,14 +61,25 @@ pub fn treasury_key() -> Result<crate::state::Key, Error> {
 
 /// Predefined accounts, `per_type` of each kind, ids allocated sequentially from 1002 in the
 /// order ECDSA, ECDSA-alias, ED25519 — exactly how hiero-local-node numbers them.
-pub fn accounts(per_type: u8, balance: Tinybar) -> Result<Vec<Account>, Error> {
+pub fn accounts(
+    per_type: u8,
+    balance: Tinybar,
+    created_at: Timestamp,
+) -> Result<Vec<Account>, Error> {
     let n = usize::from(per_type).min(10);
     let mut out = Vec::with_capacity(n * 3);
     let mut next = FIRST_USER_ID;
 
     for hex_key in ECDSA.iter().take(n) {
         let (key, _alias) = ecdsa_public(&decode_hex(hex_key)?)?;
-        out.push(dev_account(EntityId(next), key, None, balance, hex_key));
+        out.push(dev_account(
+            EntityId(next),
+            key,
+            None,
+            balance,
+            created_at,
+            hex_key,
+        ));
         next += 1;
     }
     for hex_key in ECDSA_ALIAS.iter().take(n) {
@@ -78,13 +89,21 @@ pub fn accounts(per_type: u8, balance: Tinybar) -> Result<Vec<Account>, Error> {
             key,
             Some(alias),
             balance,
+            created_at,
             hex_key,
         ));
         next += 1;
     }
     for hex_key in ED25519.iter().take(n) {
         let key = ed25519_public(&decode_hex(hex_key)?)?;
-        out.push(dev_account(EntityId(next), key, None, balance, hex_key));
+        out.push(dev_account(
+            EntityId(next),
+            key,
+            None,
+            balance,
+            created_at,
+            hex_key,
+        ));
         next += 1;
     }
     Ok(out)
@@ -95,6 +114,7 @@ fn dev_account(
     key: crate::state::Key,
     alias: Option<alloy_primitives::Address>,
     balance: Tinybar,
+    created_at: Timestamp,
     private_key_hex: &str,
 ) -> Account {
     Account {
@@ -105,6 +125,7 @@ fn dev_account(
         nonce: 0,
         deleted: false,
         memo: String::new(),
+        created_at,
         private_key_hex: Some(private_key_hex.to_string()),
     }
 }
@@ -116,7 +137,8 @@ mod tests {
     #[test]
     fn first_alias_account_matches_local_node_readme() {
         // hiero-local-node README: 0.0.1012 - 0x67D8d32E9Bf1a9968a5ff53B87d777Aa8EBBEe69 - 0x105d05…
-        let all = accounts(10, Tinybar::from_hbar(10_000)).expect("predefined keys derive");
+        let all = accounts(10, Tinybar::from_hbar(10_000), Timestamp::default())
+            .expect("predefined keys derive");
         assert_eq!(all.len(), 30);
         let first_alias = &all[10];
         assert_eq!(first_alias.id, EntityId(1012));
@@ -130,7 +152,8 @@ mod tests {
     #[test]
     fn two_per_type_numbers_like_local_node() {
         // `hedera start --accounts=2` puts the first alias account at 0.0.1004.
-        let all = accounts(2, Tinybar::from_hbar(1)).expect("predefined keys derive");
+        let all = accounts(2, Tinybar::from_hbar(1), Timestamp::default())
+            .expect("predefined keys derive");
         assert_eq!(all[2].id, EntityId(1004));
         assert!(all[2].alias.is_some());
     }

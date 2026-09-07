@@ -23,6 +23,21 @@ impl Timestamp {
     pub const fn from_secs(secs: u64) -> Self {
         Self { secs, nanos: 0 }
     }
+
+    /// The next representable instant. Consensus timestamps are one nanosecond apart at the
+    /// closest, because Hedera uses them to identify a transaction.
+    pub const fn next_nano(self) -> Self {
+        match self.nanos {
+            999_999_999 => Self {
+                secs: self.secs + 1,
+                nanos: 0,
+            },
+            nanos => Self {
+                secs: self.secs,
+                nanos: nanos + 1,
+            },
+        }
+    }
 }
 
 /// Mirror node text form: `"1700000000.000000001"` (`openapi.yml` Timestamp pattern).
@@ -56,6 +71,19 @@ impl Clock for SystemClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn next_nano_carries_into_the_next_second() {
+        let end = Timestamp {
+            secs: 10,
+            nanos: 999_999_999,
+        };
+        assert_eq!(end.next_nano(), Timestamp { secs: 11, nanos: 0 });
+        assert_eq!(
+            Timestamp { secs: 10, nanos: 0 }.next_nano(),
+            Timestamp { secs: 10, nanos: 1 }
+        );
+    }
 
     #[test]
     fn mirror_format_pads_nanos() {

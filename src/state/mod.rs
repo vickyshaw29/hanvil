@@ -112,6 +112,7 @@ pub struct Chain {
     txs: HashMap<B256, TxRecord>,
     time_offset: i64,
     next_timestamp: Option<u64>,
+    last_consensus: Timestamp,
     impersonated: HashSet<Address>,
     snapshots: BTreeMap<u64, Chain>,
     next_snapshot: u64,
@@ -133,19 +134,22 @@ impl Chain {
             txs: HashMap::new(),
             time_offset: 0,
             next_timestamp: None,
+            last_consensus: genesis.now,
             impersonated: HashSet::new(),
             snapshots: BTreeMap::new(),
             next_snapshot: 0,
         };
-        let users = keys::predefined::accounts(genesis.accounts_per_type, genesis.balance)?;
+        let users =
+            keys::predefined::accounts(genesis.accounts_per_type, genesis.balance, genesis.now)?;
         let funded = Tinybar(genesis.balance.0.saturating_mul(users.len() as u64));
         chain.insert_account(system_account(
             TREASURY,
             Some(keys::predefined::treasury_key()?),
             Tinybar(TOTAL_SUPPLY.0.saturating_sub(funded.0)),
+            genesis.now,
         ));
-        chain.insert_account(system_account(NODE, None, Tinybar(0)));
-        chain.insert_account(system_account(FEE_COLLECTOR, None, Tinybar(0)));
+        chain.insert_account(system_account(NODE, None, Tinybar(0), genesis.now));
+        chain.insert_account(system_account(FEE_COLLECTOR, None, Tinybar(0), genesis.now));
         for account in users {
             chain.insert_account(account);
         }
@@ -217,6 +221,47 @@ impl Chain {
     /// A mined transaction.
     pub fn transaction(&self, hash: &B256) -> Option<&TxRecord> {
         self.txs.get(hash)
+    }
+
+    /// Every block, oldest first.
+    pub fn blocks(&self) -> &[Block] {
+        &self.blocks
+    }
+
+    /// The genesis block's consensus timestamp: when this chain came into being.
+    pub fn genesis_timestamp(&self) -> Timestamp {
+        self.blocks[0].consensus_timestamp
+    }
+
+    /// Every mined transaction in consensus order.
+    pub fn transactions(&self) -> impl Iterator<Item = &TxRecord> {
+        self.blocks
+            .iter()
+            .flat_map(|block| block.transactions.iter())
+            .filter_map(|hash| self.txs.get(hash))
+    }
+
+    /// Account by entity id.
+    pub fn account(&self, id: EntityId) -> Option<&Account> {
+        self.accounts.get(&id)
+    }
+
+    /// Entity id behind an EVM address, account or contract.
+    pub fn entity_by_evm(&self, address: &Address) -> Option<EntityId> {
+        self.by_evm
+            .get(address)
+            .or_else(|| self.contract_by_evm.get(address))
+            .copied()
+    }
+
+    /// Contract metadata by entity id.
+    pub fn contract(&self, id: EntityId) -> Option<&Contract> {
+        self.contracts.get(&id)
+    }
+
+    /// Contract entity id for an EVM address.
+    pub fn contract_id_by_evm(&self, address: &Address) -> Option<EntityId> {
+        self.contract_by_evm.get(address).copied()
     }
 
     /// Account by alias or long-zero address.
@@ -398,7 +443,12 @@ impl Chain {
 
     /// Read touched balances and nonces back from an execution, allocate ids for new contracts,
     /// and create hollow accounts for fresh addresses that received value.
-    fn sync_db_into_accounts(&mut self, state: &revm::state::EvmState, tx_hash: Option<B256>) {
+    fn sync_db_into_accounts(
+        &mut self,
+        state: &revm::state::EvmState,
+        tx_hash: Option<B256>,
+        created_at: Timestamp,
+    ) {
         let block = self.block_number() + 1;
         let mut new_contracts = Vec::new();
         let mut hollow = Vec::new();
@@ -442,6 +492,7 @@ impl Chain {
                 nonce: 0,
                 deleted: false,
                 memo: String::new(),
+                created_at,
                 private_key_hex: None,
             });
         }
@@ -523,19 +574,19 @@ impl Chain {
         now: Timestamp,
     ) -> Result<B256, Error> {
         let timestamp = self.next_block_timestamp(now);
+        let consensus_timestamp = self.next_consensus(Timestamp {
+            secs: timestamp,
+            nanos: now.nanos,
+        });
         let block = self.block_input(timestamp);
         self.sync_accounts_into_db();
         let executed = evm::execute(&mut self.db, self.chain_id, &block, Mode::Transaction, env)?;
-        self.sync_db_into_accounts(&executed.state, Some(hash));
+        self.sync_db_into_accounts(&executed.state, Some(hash), consensus_timestamp);
         self.db.commit(executed.state);
 
         let gas_used = executed.result.tx_gas_used();
         self.credit_burned_base_fee(gas_used);
         let receipt = receipt_from(&executed.result, effective_gas_price);
-        let consensus_timestamp = Timestamp {
-            secs: timestamp,
-            nanos: now.nanos,
-        };
         tracing::info!(
             kind = match &body {
                 TxBody::Signed(_) => "eth_sendRawTransaction",
@@ -606,15 +657,25 @@ impl Chain {
     /// `evm_mine`: an empty block.
     pub fn mine_empty(&mut self, now: Timestamp) -> &Block {
         let timestamp = self.next_block_timestamp(now);
-        self.seal_block(
-            timestamp,
-            Timestamp {
-                secs: timestamp,
-                nanos: now.nanos,
-            },
-            Vec::new(),
-        );
+        let consensus = self.next_consensus(Timestamp {
+            secs: timestamp,
+            nanos: now.nanos,
+        });
+        self.seal_block(timestamp, consensus, Vec::new());
         self.latest_block()
+    }
+
+    /// Consensus timestamps identify a transaction on Hedera, so they are unique and increasing.
+    /// A fixed clock, or two transactions inside one nanosecond, would otherwise produce two
+    /// records with the same id.
+    fn next_consensus(&mut self, at: Timestamp) -> Timestamp {
+        let next = if at > self.last_consensus {
+            at
+        } else {
+            self.last_consensus.next_nano()
+        };
+        self.last_consensus = next;
+        next
     }
 
     fn call_env(&self, request: &CallRequest) -> TxEnv {
@@ -721,7 +782,7 @@ impl Chain {
     }
 
     /// `anvil_setBalance`. Creates a hollow account for an unknown address.
-    pub fn set_balance(&mut self, address: Address, balance: Tinybar) {
+    pub fn set_balance(&mut self, address: Address, balance: Tinybar, now: Timestamp) {
         if let Some(id) = self.by_evm.get(&address).copied() {
             if let Some(account) = self.accounts.get_mut(&id) {
                 account.balance = balance;
@@ -741,6 +802,7 @@ impl Chain {
             nonce: 0,
             deleted: false,
             memo: String::new(),
+            created_at: now,
             private_key_hex: None,
         });
     }
@@ -799,7 +861,12 @@ impl Chain {
     }
 }
 
-fn system_account(id: EntityId, key: Option<Key>, balance: Tinybar) -> Account {
+fn system_account(
+    id: EntityId,
+    key: Option<Key>,
+    balance: Tinybar,
+    created_at: Timestamp,
+) -> Account {
     Account {
         id,
         key,
@@ -808,6 +875,7 @@ fn system_account(id: EntityId, key: Option<Key>, balance: Tinybar) -> Account {
         nonce: 0,
         deleted: false,
         memo: String::new(),
+        created_at,
         private_key_hex: None,
     }
 }
@@ -935,7 +1003,11 @@ mod tests {
     fn set_balance_creates_hollow_account() {
         let mut c = chain();
         let addr = Address::repeat_byte(0xaa);
-        c.set_balance(addr, Tinybar::from_hbar(5));
+        c.set_balance(
+            addr,
+            Tinybar::from_hbar(5),
+            Timestamp::from_secs(1_700_000_001),
+        );
         let account = c.account_by_evm(&addr).expect("hollow account");
         assert_eq!(account.key, None);
         assert_eq!(account.alias, Some(addr));
