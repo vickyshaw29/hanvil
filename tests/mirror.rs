@@ -174,6 +174,16 @@ fn transactions_carry_the_hedera_view_of_an_evm_transfer() {
     assert_eq!(filtered["transactions"].as_array().expect("list").len(), 1);
     let (_, other) = node.get("/api/v1/transactions?account.id=0.0.1003");
     assert_eq!(other["transactions"], json!([]));
+
+    // A real Hedera type Hanvil never records has no matches; a typo is a caller error.
+    let (status, none) = node.get("/api/v1/transactions?transactiontype=CRYPTOTRANSFER");
+    assert_eq!(status, 200);
+    assert_eq!(none["transactions"], json!([]));
+    let (status, mine) = node.get("/api/v1/transactions?transactiontype=ethereumtransaction");
+    assert_eq!(status, 200);
+    assert_eq!(mine["transactions"].as_array().expect("list").len(), 1);
+    let (status, _) = node.get("/api/v1/transactions?transactiontype=CRYPTOTRANSFERS");
+    assert_eq!(status, 400, "not a transaction type the mirror knows");
 }
 
 #[test]
