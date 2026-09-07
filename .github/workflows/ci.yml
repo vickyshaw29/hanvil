@@ -15,10 +15,23 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: tests/js/package-lock.json
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all-targets
+      - run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
       - run: cargo build --release
+      - name: JS end to end (viem)
+        working-directory: tests/js
+        run: |
+          npm ci
+          HANVIL_BIN=../../target/release/hanvil node --test
       - name: boot time budget (100 ms)
         shell: bash
         run: |

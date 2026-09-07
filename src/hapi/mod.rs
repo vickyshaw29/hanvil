@@ -7,7 +7,10 @@
     dead_code,
     missing_docs,
     unused_imports,
-    unused_qualifications
+    unused_qualifications,
+    rustdoc::bare_urls,
+    rustdoc::broken_intra_doc_links,
+    rustdoc::invalid_html_tags
 )]
 pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/hapi.rs"));
