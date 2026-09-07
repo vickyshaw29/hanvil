@@ -301,7 +301,7 @@ alloy-primitives 1.7.2, alloy-consensus 2.4.1, alloy-rlp 0.3.16, k256 0.14.0, cl
   `QueryHeader.payment` on the `ANSWER_ONLY` request. Hanvil therefore answers `COST_ANSWER`
   with `cost: 0` and, on `ANSWER_ONLY`, decodes the payment and ignores it. No special casing.
 
-## 15. Day 1 findings (2026-09-08)
+## 15. Day 1 findings (2026-09-07, started a day early)
 
 - **The EVM runs in tinybar on Hedera; the relay scales at the boundary.** scaffold's
   `packages/nextjs/scaffold.config.ts:16-19` says it in a comment (HBAR 18 decimals only on the
@@ -332,5 +332,5 @@ alloy-primitives 1.7.2, alloy-consensus 2.4.1, alloy-rlp 0.3.16, k256 0.14.0, cl
 - Boot, release build, 10 runs on this machine: self-reported "Started in 1 ms"; wall clock from
   spawn to banner 25–27 ms with one 1,078 ms outlier on the first run after linking (macOS
   first-launch check). Binary 5.6 MB.
-- Blocky402 `/supported` re-checked 2026-09-08 morning: still `hedera:mainnet` only. Discord
+- Blocky402 `/supported` re-checked 2026-09-07 afternoon: still `hedera:mainnet` only. Discord
   question still open (his action).
