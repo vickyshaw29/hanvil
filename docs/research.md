@@ -339,3 +339,32 @@ alloy-primitives 1.7.2, alloy-consensus 2.4.1, alloy-rlp 0.3.16, k256 0.14.0, cl
   unformatted; CI caught it on `cargo fmt --check` (runs 34104047792, 34104112619). Until the
   session is started from this folder, run `cargo fmt --all && cargo clippy --all-targets -- -D
   warnings` by hand before every commit.
+
+## 16. Day 2 findings (2026-09-07)
+
+- **Correction to §6.** "`/network/exchangerate` fixed 1 ℏ = 12 ¢, matches local-node" was not
+  verifiable: no `cent_equivalent`, `hbar_equivalent` or exchange-rate fixture exists anywhere in
+  `research/hiero-local-node`, and the consensus-node clone holds only `exchange_rate.proto`
+  (`hapi/hedera-protobuf-java-api/src/main/proto/services/exchange_rate.proto:41,48` define the
+  fields, not the values). Hanvil serves `hbar_equivalent: 30000, cent_equivalent: 360000`
+  (= 12 ¢) and marks it `// VERIFY` in `src/mirror/network.rs`.
+- **Mirror list parameters** (`rest/api/v1/openapi.yml:4904,5054,5062,5551`): `limit` defaults to
+  25 with range 1..=100; `order` defaults to `asc` except on the account and transaction endpoints
+  where the spec uses `orderQueryParamDesc`; `transactions` defaults to true.
+- **Mirror 404 and 400 bodies** (`openapi.yml:4521-4600`): `{"_status":{"messages":[{"message":
+  "Not found"}]}}` for a missing entity; `Invalid Transaction id. Please use
+  "shard.realm.num-sss-nnn" format …` for the SDK's `0.0.x@sss.nnn`. The spec's YAML escapes the
+  quotes as `\shard…\`; the quotes are what a real mirror sends.
+- **`Block.name`** (`openapi.yml:3371`) is the record file name,
+  `2022-05-03T06_46_26.060890949Z.rcd`, derived from the block's consensus timestamp. Hanvil
+  computes the civil date with Howard Hinnant's `civil_from_days`; `chrono` stays off the list.
+- **AccountInfo required fields** (`openapi.yml:1975-1993`) are all present in Hanvil's response;
+  `alias` is null because Hanvil mints EVM-address aliases, not base32 key aliases.
+- **`NetworkNode.grpc_proxy_endpoint` deviation.** `openapi.yml:2984-3002` lists it required and
+  `openapi.yml:3711` types it as a non-nullable `ServiceEndpoint`. It is HIP-1081's gRPC-web proxy,
+  which Hanvil does not run, and no value in the schema means "none". Hanvil sends `null`; the key
+  is present, so a reader that checks for the key is satisfied. Marked `// VERIFY` in
+  `src/mirror/network.rs` until a running mirror node can be compared against.
+- **PR #39's reader** (`research/harness-prs/pr-39.diff`, `src/validation/mirrorNode.ts`) treats
+  404 as "not yet" and any other 4xx as a caller error it stops polling on. That is why the
+  transaction-id form is a 400 and not an empty list.

@@ -1,29 +1,111 @@
 # hanvil
 
-A local Hedera network that fits in one binary and starts before you finish typing the next
-command. It listens where hiero-local-node listens — JSON-RPC on 7546, the mirror REST API on
-5551, HAPI gRPC on 50211 — and hands out the same thirty dev accounts with the same ids and keys,
-so `@hiero-ledger/sdk`, viem, hardhat and foundry don't know the difference. Unlike the Docker
-stack, it can take a snapshot of the whole chain and put it back.
+A local Hedera network in one binary. It boots in 1 ms, prints thirty pre-funded accounts, and
+serves the three protocols a Hedera app already speaks — JSON-RPC on 7546, mirror node REST on
+5551, HAPI gRPC on 50211 — from one in-memory chain, on the ports `hiero-local-node` uses. Unlike
+the Docker stack it can snapshot the whole chain and put it back.
 
-I built it so hedera-harness could run its on-chain validation tier without a testnet account,
+I built it so `hedera-harness` can run its on-chain validation tier without a testnet account,
 without HBAR, and with a clean chain for every repair attempt.
 
-It's early. Today the JSON-RPC side works end to end: `cast send --create` deploys a contract,
-viem writes to it and decodes its custom errors, `eth_getLogs` finds the events, and
-`evm_snapshot` / `evm_revert` put the whole chain back — state, blocks, nonces, clock. The mirror
-REST and gRPC listeners are next. The week's work is laid out in `docs/code-plan.md`; every claim
-about how Hedera's own tooling behaves is pinned to a file and line in `docs/research.md`.
+## Measured
+
+On an M-series Mac, 2026-09-07, release build:
+
+| | hanvil | how it was measured |
+| --- | --- | --- |
+| Boot to listeners bound | 1 ms | the binary prints `Started in 1 ms` |
+| Resident memory | 3.8 MB | `ps -o rss= -p $(pgrep -x hanvil)` |
+| Accounts pre-funded | 30, 10,000 ℏ each | the boot banner |
+
+CI asserts the median boot stays under 100 ms on ubuntu and macos runners
+(`.github/workflows/ci.yml`). The comparison against `hiero-local-node` is not measured yet, so
+this table does not carry it.
+
+## Run it
 
 ```
-cargo run --release
-cast send --rpc-url localhost:7546 --private-key 0x105d050185ccb907fba04dd92d8de9e32c18305e097ab41dadda21489a211524 --create 0x6080...
-cast rpc --rpc-url localhost:7546 evm_snapshot
+cargo build --release
+./target/release/hanvil
+curl -s localhost:5551/api/v1/accounts/0.0.1012 | jq .balance
 ```
 
-The EVM runs in tinybar, as it does on Hedera: `eth_getBalance` reports 18 decimals, a `value`
-that is not a whole number of tinybar is refused, and a Solidity `1 ether` is 10^18 tinybar.
-Fees go to 0.0.98 instead of being burned. Only the head state is served; ask for an older block
-and you get an error, not a guess.
+```
+hanvil 0.1.0 — local Hedera network
+JSON-RPC   http://127.0.0.1:7546   chain id 298
+Mirror     http://127.0.0.1:5551/api/v1
+gRPC       127.0.0.1:50211          node 0.0.3 (not yet served)
+
+Accounts (ECDSA, long-zero address)
+0.0.1002  0x00000000000000000000000000000000000003ea  0x7f109a9e3b0d8ecfba9cc23a3614433ce0fa7ddcc80f2a8f10b222179a5a80d6
+…
+Accounts (ECDSA with EVM alias)
+0.0.1012  0x67D8d32E9Bf1a9968a5ff53B87d777Aa8EBBEe69  0x105d050185ccb907fba04dd92d8de9e32c18305e097ab41dadda21489a211524
+…
+Started in 1 ms
+```
+
+The accounts, their ids and their keys are `hiero-local-node`'s, byte for byte, so anything
+configured for it works unchanged. They are development keys; they must never hold value.
+
+## Endpoints
+
+| Port | What | Surface |
+| --- | --- | --- |
+| 7546 | JSON-RPC, relay shape | `eth_chainId` `eth_blockNumber` `eth_getBalance` `eth_getCode` `eth_getStorageAt` `eth_getTransactionCount` `eth_gasPrice` `eth_maxPriorityFeePerGas` `eth_feeHistory` `eth_call` `eth_estimateGas` `eth_sendRawTransaction` `eth_sendTransaction` `eth_getTransactionByHash` `eth_getTransactionReceipt` `eth_getBlockBy{Number,Hash}` `eth_getBlockReceipts` `eth_getLogs` `eth_getBlockTransactionCountBy{Hash,Number}` `eth_getTransactionByBlock{Hash,Number}AndIndex` `net_version` `net_listening` `web3_clientVersion` `web3_sha3` |
+| 7546 | Anvil cheats | `evm_snapshot` `evm_revert` `evm_mine` `evm_increaseTime` `evm_setNextBlockTimestamp` `anvil_setBalance` `anvil_setCode` `anvil_setNonce` `anvil_setStorageAt` `anvil_impersonateAccount` `anvil_stopImpersonatingAccount` `anvil_mine` `anvil_nodeInfo`, and the `hardhat_` aliases |
+| 5551 | Mirror node REST | `/api/v1/accounts/{id\|alias\|evm}` `/accounts/{id}/tokens` `/transactions` `/transactions/{0.0.x-sss-nnn}` `/contracts/{id\|address}` `/contracts/{id}/results` `/contracts/results/{hash\|txId}` `/contracts/results/logs` `/blocks` `/blocks/{number\|hash}` `/network/nodes` `/network/fees` `/network/exchangerate` |
+| 50211 | HAPI gRPC | not served yet |
+
+## What is emulated, and what is not
+
+The EVM runs in tinybar, as it does on Hedera. One EVM wei is one tinybar; `eth_getBalance` and
+`eth_gasPrice` multiply by 10¹⁰ at the JSON-RPC boundary, a `value` that is not a whole number of
+tinybar is refused with the relay's error, and a Solidity `1 ether` literal is 10¹⁸ tinybar — the
+same quirk real Hedera has. Gas costs 71 tinybar; the fee goes to 0.0.98 instead of being burned,
+so supply is conserved and fees are visible on that account. One block is mined per transaction.
+Contracts created through the EVM are allocated a `0.0.N` id and appear on the mirror endpoints
+under it.
+
+Not emulated. Each of these is a deliberate hole, not an oversight:
+
+- HAPI gRPC on 50211: the listener is not there yet. `Client.forLocalNode()` will not connect.
+- Consensus, gossip, multiple nodes, staking, record files, fee schedules.
+- HTS, HFS, scheduled transactions, token and NFT data. `/accounts/{id}/tokens` is always empty.
+- Topics and topic messages: `/topics/…` is not served until HAPI lands.
+- Historical state. Only the head is served; asking for an older block is an error, not a guess.
+- Batch mining: `evm_setAutomine` and `evm_setIntervalMining` return `-32601` with the reason.
+- `anvil_dumpState`, `anvil_loadState`, `anvil_reset`, and `--state` persistence across restarts.
+- The mirror's `alias` field is null — Hanvil mints EVM-address aliases, which `evm_address`
+  already carries, not base32 key aliases.
+- A block's `hash` is a 32-byte keccak over its own fields, not a 48-byte record file hash, and
+  `hapi_version` is null because Hanvil is not a consensus node and will not claim a version.
+- A transaction's `transfers` list carries the fee and the top-level value transfer. Value moved
+  by an inner call is not itemised.
+- The exchange rate is fixed at 1 ℏ = 12 ¢ and never expires.
+- Key lists and threshold keys. Accounts hold one key.
+
+## Harness integration
+
+Two PRs against `hedera-dev/hedera-harness` `dev` make its Tier 3.5 chain validation run here:
+`network: "local"` for the signer and the validator prompt, and a snapshot per repair attempt so
+retries do not inherit the previous attempt's on-chain state. Neither is open yet.
+
+## How it is built
+
+One `Chain` struct behind one `RwLock`. Every listener takes the same lock, so a transfer over
+JSON-RPC is visible to the mirror in the same millisecond. `evm_snapshot` clones the struct;
+`evm_revert` swaps it back.
+
+```
+ JSON-RPC :7546 ─┐
+ mirror   :5551 ─┼─→ RwLock<Chain> ─→ accounts · blocks · receipts · logs · revm CacheDB
+ HAPI     :50211 ┘                    (balances authoritative in tinybar)
+```
+
+`revm` executes, `alloy` decodes and recovers senders, `axum` serves both HTTP listeners, `tonic`
+will serve gRPC, `clap` reads the flags. No outbound network calls — the binary never fetches
+anything. The build is laid out in `docs/code-plan.md`; every claim about how Hedera's own tooling
+behaves is pinned to a file and line in `docs/research.md`.
 
 MIT. Vendored HAPI protobufs are Apache-2.0 — see NOTICE.

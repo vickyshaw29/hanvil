@@ -61,6 +61,12 @@ hanvil/
         └── viem.test.mjs     # deploy + call + logs
 ```
 
+### 2b. Dependencies added after the plan was written
+
+| Crate | Version | Why |
+| --- | --- | --- |
+| `base64` | 0.22 | The mirror's `format: byte` fields (`transaction_hash`, `memo_base64`, and Day 3's topic `message`) are base64. Already in the lock file as a transitive dependency; MIT/Apache-2.0. |
+
 ## 3. State model
 
 ```rust
