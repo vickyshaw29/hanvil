@@ -9,13 +9,21 @@ stack, it can take a snapshot of the whole chain and put it back.
 I built it so hedera-harness could run its on-chain validation tier without a testnet account,
 without HBAR, and with a clean chain for every repair attempt.
 
-It's early. Today it boots the accounts and answers `eth_chainId`, `eth_blockNumber` and
-`eth_getBalance`. The rest of the week's work is laid out in `docs/code-plan.md`; every claim
+It's early. Today the JSON-RPC side works end to end: `cast send --create` deploys a contract,
+viem writes to it and decodes its custom errors, `eth_getLogs` finds the events, and
+`evm_snapshot` / `evm_revert` put the whole chain back — state, blocks, nonces, clock. The mirror
+REST and gRPC listeners are next. The week's work is laid out in `docs/code-plan.md`; every claim
 about how Hedera's own tooling behaves is pinned to a file and line in `docs/research.md`.
 
 ```
 cargo run --release
-curl -s localhost:7546 -d '{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x67D8d32E9Bf1a9968a5ff53B87d777Aa8EBBEe69","latest"]}'
+cast send --rpc-url localhost:7546 --private-key 0x105d050185ccb907fba04dd92d8de9e32c18305e097ab41dadda21489a211524 --create 0x6080...
+cast rpc --rpc-url localhost:7546 evm_snapshot
 ```
+
+The EVM runs in tinybar, as it does on Hedera: `eth_getBalance` reports 18 decimals, a `value`
+that is not a whole number of tinybar is refused, and a Solidity `1 ether` is 10^18 tinybar.
+Fees go to 0.0.98 instead of being burned. Only the head state is served; ask for an older block
+and you get an error, not a guess.
 
 MIT. Vendored HAPI protobufs are Apache-2.0 — see NOTICE.

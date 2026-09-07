@@ -47,8 +47,11 @@ outbound calls), no `unsafe`, no `lazy_static` (use `std::sync::LazyLock`), no `
 
 1. **One `Chain` struct behind one `RwLock`.** Every request takes it once. No second source of
    truth. No `Arc<Mutex<..>>` per submodule.
-2. **Balances are authoritative in tinybar** on `Account`. The revm `CacheDB` balance is derived
-   (`× 10¹⁰`) before execution and written back after. Never read a balance from `CacheDB`.
+2. **Balances are authoritative in tinybar** on `Account`, and **the EVM runs in tinybar** —
+   one EVM wei is one tinybar, exactly as on Hedera. Account balances and nonces are copied into
+   the revm `CacheDB` before every execution and read back after; the `× 10¹⁰` happens only at
+   the JSON-RPC boundary (`evm/units.rs`). Contract balances have no `Account` and are read from
+   `CacheDB`; that is the one exception, and `Chain::balance_by_evm` is the only reader.
 3. **Every id is a newtype.** `EntityId(u64)`, `Tinybar(u64)`, `Weibar(U256)`, `TxId`, `Timestamp`.
    Conversions exist only in `evm/units.rs`. A raw `u64` crossing a module boundary is a bug.
 4. **Protocol shapes are copied, never guessed.** Each response struct carries a comment with

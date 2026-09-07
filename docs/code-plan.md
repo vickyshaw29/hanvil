@@ -85,9 +85,12 @@ pub struct Account { id: EntityId, key: Option<Key>, alias: Option<Address>,
                      max_auto_assoc: i32, created_ts: Timestamp, receiver_sig: bool }
 ```
 
-Balance is authoritative in `Account.balance_tinybar`; the revm `CacheDB` balance is written as
-`tinybar * 10^10` before every EVM execution and read back after (§5). One `RwLock<Chain>`; every
-request takes it. Correctness first; contention is irrelevant at this scale.
+Balance is authoritative in `Account.balance`; **the EVM's native unit is the tinybar** (as on
+Hedera), so the revm `CacheDB` balance is written as tinybar, unscaled, before every EVM execution
+and read back after (§5). One `RwLock<Chain>`; every request takes it — including `eth_call`,
+which runs the EVM in place. Correctness first; contention is irrelevant at this scale.
+Snapshots live inside `Chain` as `BTreeMap<u64, Chain>` and are taken out before the clone, so a
+snapshot never nests earlier snapshots. Ids keep increasing across reverts, as Anvil's do.
 
 ## 4. Identity and units
 
@@ -100,20 +103,33 @@ request takes it. Correctness first; contention is irrelevant at this scale.
   `by_evm` indexes both forms. `/accounts/{x}` accepts `0.0.N`, `0x…` long-zero, `0x…` alias.
 - Contracts created by EVM `CREATE`/`CREATE2` get the standard EVM address and a fresh `0.0.N`;
   `created_contract_ids` and `contract_id` in mirror responses use the id.
-- Units: **1 tinybar = 10¹⁰ wei.** `eth_getBalance` = tinybar × 10¹⁰. Incoming `tx.value` must be
-  a multiple of 10¹⁰; otherwise reject like the relay. Gas price default: 71 gwei-equivalent,
-  configurable `--gas-price` in tinybar. Fees charged: `gas_used × gas_price` deducted from payer in
-  tinybar; HAPI tx fee flat `--hapi-fee` (default 0).
+- Units: **1 tinybar = 10¹⁰ weibar**, and the conversion happens only at the JSON-RPC boundary.
+  `eth_getBalance` = tinybar × 10¹⁰; `eth_gasPrice` = tinybar price × 10¹⁰. Incoming `tx.value`
+  must be a multiple of 10¹⁰ (`-32602` naming the rule otherwise); incoming gas prices are floored
+  to whole tinybar, as the relay floors. Inside the EVM `msg.value`, balances and `gasprice` are
+  tinybar — a Solidity `1 ether` literal is 10¹⁸ tinybar, the same quirk real Hedera has.
+  Gas price default **71 tinybar per gas** (`--gas-price`), reported as 710 gwei. revm enforces
+  `gas_price ≥ base fee` with `basefee = 71`, and the base fee it burns is credited back to
+  0.0.98 after execution so total supply is conserved and fees are visible on that account.
+  HAPI tx fee flat `--hapi-fee` (default 0), Day 3.
 
 ## 5. Execution paths
 
-**EVM tx (`eth_sendRawTransaction`)**: decode with `alloy-consensus` (legacy, 2930, 1559);
-recover sender (or accept if impersonated); chain id check → `WRONG_CHAIN_ID`-style error; nonce
-check against `Account.nonce`; sync balance into `CacheDB`; build `TxEnv`; `evm.transact_commit`;
-on success write back balance/nonce, allocate contract ids for created addresses, append block
-(automine) with `consensus_timestamp = now + offset`, store receipt/logs; synthesise a HAPI-side
-record (`transaction_id` = `0.0.<payer>-<sec>-<nanos>`, name `ETHEREUMTRANSACTION`, result
-`SUCCESS`/`CONTRACT_REVERT_EXECUTED`) so `/transactions` and `/contracts/results/{hash}` answer.
+**EVM tx (`eth_sendRawTransaction`)** — built Day 1: decode with `alloy-consensus` (legacy,
+2930, 1559; 4844 and 7702 refused by type); recover sender; convert value and gas price to tinybar;
+sync every account's balance and nonce into `CacheDB`; `evm.transact` (revm checks chain id, nonce,
+funds, gas price, block gas limit — each mapped to a `-32000` message naming the numbers); commit
+the state map, read touched balances and nonces back, allocate `0.0.N` ids for created contracts,
+create hollow accounts for fresh addresses that received value, credit the burned base fee to
+0.0.98; append one block; store receipt and logs. `eth_sendTransaction` runs the same path unsigned
+for predefined and impersonated senders (hash = keccak of a fixed preimage) and refuses anyone
+else by address. A HAPI-side record (`transaction_id` = `0.0.<payer>-<sec>-<nanos>`, name
+`ETHEREUMTRANSACTION`, result `SUCCESS`/`CONTRACT_REVERT_EXECUTED`) is Day 2's job so that
+`/transactions` and `/contracts/results/{hash}` answer.
+`eth_estimateGas` runs the call at the cap, then bisects between gas used and the cap for the
+smallest passing limit (the 63/64 rule). Reverts from `eth_call`/`eth_estimateGas` return
+`{code: 3, message: "execution reverted: <Error(string) text>", data: 0x…}`; halts return -32000.
+Only the head state is served: a historical block tag returns -32000 naming the head.
 
 **HAPI tx (gRPC)**: `Transaction.signedTransactionBytes` → `SignedTransaction` → `bodyBytes` →
 `TransactionBody`. Checks in order, each mapping to a precheck code: node account is 0.0.3

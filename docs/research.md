@@ -300,3 +300,37 @@ alloy-primitives 1.7.2, alloy-consensus 2.4.1, alloy-rlp 0.3.16, k256 0.14.0, cl
   payment for that cost, even zero, signs it with the operator and attaches it as
   `QueryHeader.payment` on the `ANSWER_ONLY` request. Hanvil therefore answers `COST_ANSWER`
   with `cost: 0` and, on `ANSWER_ONLY`, decodes the payment and ignores it. No special casing.
+
+## 15. Day 1 findings (2026-09-08)
+
+- **The EVM runs in tinybar on Hedera; the relay scales at the boundary.** scaffold's
+  `packages/nextjs/scaffold.config.ts:16-19` says it in a comment (HBAR 18 decimals only on the
+  RPC side) and `rpc-api.md:87` says `eth_gasPrice` is "tinybars converted to wei". Hanvil follows:
+  revm balances, `msg.value` and `gasprice` are tinybar; `evm/units.rs` multiplies by 10¹⁰ on the
+  way out and divides on the way in (value must divide exactly; gas price floors). `.claude/CLAUDE.md`
+  §3 rule 2 and `code-plan.md` §3–5 were corrected to match.
+- revm 43: `CfgEnv.disable_balance_check`, `disable_block_gas_limit` and `disable_base_fee` exist
+  only behind the cargo features `optional_balance_check`, `optional_block_gas_limit`,
+  `optional_no_base_fee` (`revm/Cargo.toml:86-91`). Enabled. `ExecutionResult::gas_used()` is
+  deprecated for `tx_gas_used()` (EIP-8037 state-gas split) — the latter is what receipts carry.
+- revm 43 `CacheDB::load_account` inserts a fresh entry as `AccountState::NotExisting`, and
+  `DbAccount::info()` then returns `None` regardless of the fields (`in_memory_db.rs:189,473`).
+  Writing a balance into such an entry is silently invisible to the EVM. `Chain::db_account`
+  flips the state to `Touched` first. This cost one failed unit test and one confused smoke run.
+- `Database` is not implemented for `&mut CacheDB` in revm 43, so `evm::execute` takes the
+  `CacheDB` by `mem::take` and puts it back from `evm.ctx.journaled_state.database`.
+- foundry 1.8.1 installed (`~/.foundry/bin`). `cast send` defaults to EIP-1559 with
+  `maxPriorityFeePerGas = 1` wei, which floors to 0 tinybar; the effective price is then the base
+  fee. `cast send --unlocked --from` drives `eth_sendTransaction`, which works for impersonated
+  and predefined senders. `cast mktx` produced the two signed fixtures in `evm::tests`.
+- viem 2.56: `getBlockNumber` caches for `cacheTime` (default = polling interval), so a read after
+  `evm_revert` must pass `cacheTime: 0`. `simulateContract` surfaces our code-3 revert data as
+  `ContractFunctionRevertedError` with `data.errorName`/`data.args` decoded — the custom-error
+  path works without any special casing.
+- solc-js 0.8.36 compiles `Counter.sol` for `cancun`; fixture checked in at
+  `tests/fixtures/Counter.json`.
+- Boot, release build, 10 runs on this machine: self-reported "Started in 1 ms"; wall clock from
+  spawn to banner 25–27 ms with one 1,078 ms outlier on the first run after linking (macOS
+  first-launch check). Binary 5.6 MB.
+- Blocky402 `/supported` re-checked 2026-09-08 morning: still `hedera:mainnet` only. Discord
+  question still open (his action).
