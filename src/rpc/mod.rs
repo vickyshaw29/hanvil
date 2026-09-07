@@ -4,7 +4,6 @@ mod cheats;
 mod eth;
 mod types;
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
@@ -12,15 +11,11 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
-use parking_lot::RwLock;
 use serde_json::{Value, json};
-use tokio::task::JoinHandle;
 
 use crate::evm::Rejected;
-use crate::state::{self, Chain, Clock};
-
-/// The chain shared by all listeners.
-pub type Shared = Arc<RwLock<Chain>>;
+use crate::serve::{Bound, Shared};
+use crate::state::{self, Clock};
 
 /// What a handler needs: the chain and the time.
 #[derive(Clone)]
@@ -29,14 +24,6 @@ pub struct App {
     pub chain: Shared,
     /// Source of "now" for new blocks.
     pub clock: Arc<dyn Clock>,
-}
-
-/// A running listener.
-pub struct Bound {
-    /// Address actually bound (matters when the port was 0).
-    pub local_addr: SocketAddr,
-    /// The serving task.
-    pub task: JoinHandle<()>,
 }
 
 /// JSON-RPC error, serialised exactly as the relay does.
@@ -115,15 +102,8 @@ impl From<state::Error> for RpcError {
 
 /// Bind and serve. Returns once the socket is listening.
 pub async fn serve(app: App, host: &str, port: u16) -> std::io::Result<Bound> {
-    let listener = tokio::net::TcpListener::bind((host, port)).await?;
-    let local_addr = listener.local_addr()?;
     let router = Router::new().route("/", post(handle)).with_state(app);
-    let task = tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, router).await {
-            tracing::error!("json-rpc listener stopped: {e}");
-        }
-    });
-    Ok(Bound { local_addr, task })
+    crate::serve::bind(host, port, router, "json-rpc").await
 }
 
 async fn handle(State(app): State<App>, body: Bytes) -> Response {

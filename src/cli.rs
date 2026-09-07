@@ -10,25 +10,33 @@ use crate::state::{Chain, Genesis, Timestamp};
 
 /// Local Hedera network: JSON-RPC, mirror REST and HAPI gRPC from one in-memory chain.
 #[derive(Parser, Debug, Clone)]
-#[command(name = "hanvil", version, about, long_about = None)]
+#[command(
+    name = "hanvil",
+    version,
+    about,
+    long_about = "One in-memory Hedera chain behind three listeners: the JSON-RPC relay on 7546, \
+                  the mirror node REST API on 5551, and HAPI gRPC on 50211 — the ports \
+                  hiero-local-node uses, with the same thirty predefined accounts. State is not \
+                  persisted; `evm_snapshot` and `evm_revert` put it back."
+)]
 pub struct Args {
-    /// Interface to bind. Use 0.0.0.0 to expose beyond this machine.
+    /// Interface to bind. 0.0.0.0 exposes the chain beyond this machine.
     #[arg(long, default_value = "127.0.0.1", env = "HANVIL_HOST")]
     pub host: String,
 
-    /// JSON-RPC port (relay shape). 0 picks a free port.
+    /// JSON-RPC port, in the relay's shape. 0 picks a free port.
     #[arg(long, short = 'p', default_value_t = 7546, env = "HANVIL_PORT")]
     pub port: u16,
 
-    /// Mirror node REST port.
+    /// Mirror node REST port. 0 picks a free port.
     #[arg(long, default_value_t = 5551, env = "HANVIL_MIRROR_PORT")]
     pub mirror_port: u16,
 
-    /// HAPI gRPC port.
+    /// HAPI gRPC port. Not served yet.
     #[arg(long, default_value_t = 50211, env = "HANVIL_GRPC_PORT")]
     pub grpc_port: u16,
 
-    /// EVM chain id. 298 is Hedera local/previewnet; 296 testnet; 31337 mimics hardhat.
+    /// EVM chain id. 298 is Hedera local, 296 testnet, 31337 mimics hardhat.
     #[arg(long, default_value_t = 298, env = "HANVIL_CHAIN_ID")]
     pub chain_id: u64,
 
@@ -40,8 +48,8 @@ pub struct Args {
     #[arg(long, default_value_t = 10_000)]
     pub balance: u64,
 
-    /// Network gas price in tinybar per gas. Transactions offering less are refused, as on the
-    /// relay. Fees go to 0.0.98.
+    /// Gas price in tinybar per gas. Offering less is refused, as on the relay; fees go to
+    /// 0.0.98.
     #[arg(long, default_value_t = 71, env = "HANVIL_GAS_PRICE")]
     pub gas_price: u64,
 
@@ -64,16 +72,13 @@ impl Args {
 }
 
 /// Boot banner: endpoints, accounts, and how long boot took.
-pub fn banner(args: &Args, chain: &Chain, rpc: SocketAddr, elapsed: Duration) {
+pub fn banner(args: &Args, chain: &Chain, rpc: SocketAddr, mirror: SocketAddr, elapsed: Duration) {
     println!(
         "hanvil {} — local Hedera network",
         env!("CARGO_PKG_VERSION")
     );
     println!("JSON-RPC   http://{rpc}   chain id {}", chain.chain_id());
-    println!(
-        "Mirror     http://{}:{}   (not yet served)",
-        args.host, args.mirror_port
-    );
+    println!("Mirror     http://{mirror}/api/v1");
     println!(
         "gRPC       {}:{}          node 0.0.3 (not yet served)",
         args.host, args.grpc_port

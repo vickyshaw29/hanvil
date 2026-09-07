@@ -8,7 +8,9 @@ mod cli;
 mod evm;
 mod hapi;
 mod keys;
+mod mirror;
 mod rpc;
+mod serve;
 mod state;
 
 use std::sync::Arc;
@@ -27,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
     let clock: Arc<dyn state::Clock> = Arc::new(state::time::SystemClock);
     let chain =
         state::Chain::genesis(&args.genesis(clock.now())).context("building genesis state")?;
-    let shared: rpc::Shared = Arc::new(RwLock::new(chain));
+    let shared: serve::Shared = Arc::new(RwLock::new(chain));
 
     let rpc = rpc::serve(
         rpc::App {
@@ -39,9 +41,18 @@ async fn main() -> anyhow::Result<()> {
     )
     .await
     .context("starting JSON-RPC listener")?;
+    let mirror = mirror::serve(Arc::clone(&shared), &args.host, args.mirror_port)
+        .await
+        .context("starting mirror REST listener")?;
 
     if !args.silent {
-        cli::banner(&args, &shared.read(), rpc.local_addr, started.elapsed());
+        cli::banner(
+            &args,
+            &shared.read(),
+            rpc.local_addr,
+            mirror.local_addr,
+            started.elapsed(),
+        );
     }
 
     tokio::signal::ctrl_c()
@@ -49,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
         .context("waiting for ctrl-c")?;
     tracing::info!("shutting down");
     rpc.task.abort();
+    mirror.task.abort();
     Ok(())
 }
 

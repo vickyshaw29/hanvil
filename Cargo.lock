@@ -1700,6 +1700,7 @@ dependencies = [
  "alloy-rlp",
  "anyhow",
  "axum",
+ "base64",
  "clap",
  "ed25519-dalek",
  "hex",
