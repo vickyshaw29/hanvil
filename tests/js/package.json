@@ -1,0 +1,14 @@
+{
+  "name": "hanvil-js-tests",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end tests against a running hanvil: viem over JSON-RPC, @hiero-ledger/sdk over gRPC",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "@hiero-ledger/sdk": "^2.86.0",
+    "solc": "^0.8.30",
+    "viem": "^2.0.0"
+  }
+}
