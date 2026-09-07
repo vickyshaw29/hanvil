@@ -1011,6 +1011,7 @@ mod tests {
         let account = c.account_by_evm(&addr).expect("hollow account");
         assert_eq!(account.key, None);
         assert_eq!(account.alias, Some(addr));
+        assert_eq!(account.created_at, Timestamp::from_secs(1_700_000_001));
         assert_eq!(c.balance_by_evm(&addr), Tinybar::from_hbar(5));
     }
 
@@ -1048,10 +1049,47 @@ mod tests {
         );
         assert_eq!(c.nonce_by_evm(&from), 1);
         assert_eq!(c.block_number(), 1);
-        assert!(
-            c.account_by_evm(&to).is_some(),
-            "recipient became a hollow account"
+        let recipient = c
+            .account_by_evm(&to)
+            .expect("recipient became a hollow account");
+        assert_eq!(
+            recipient.created_at, tx.consensus_timestamp,
+            "created when the transfer reached consensus, not at genesis"
         );
+        assert_ne!(recipient.created_at, c.accounts[&EntityId(1004)].created_at);
+    }
+
+    #[test]
+    fn consensus_timestamps_are_unique_under_a_fixed_clock() {
+        // The mirror builds a transaction id from the payer and this timestamp, so two
+        // transactions in the same nanosecond would otherwise share one id.
+        let mut c = chain();
+        let from = c.accounts[&EntityId(1004)].evm_address();
+        let now = Timestamp::from_secs(1_700_000_001);
+        let mut sent = Vec::new();
+        for nonce in 0..3 {
+            let hash = c
+                .send_unsigned(
+                    UnsignedTx {
+                        from,
+                        to: Some(Address::repeat_byte(0xcc)),
+                        nonce,
+                        gas_limit: 21_000,
+                        gas_price: 71,
+                        value: 1,
+                        input: Bytes::new(),
+                    },
+                    now,
+                )
+                .expect("transfer");
+            sent.push(c.transaction(&hash).expect("recorded").consensus_timestamp);
+        }
+        assert!(
+            sent.windows(2).all(|pair| pair[1] > pair[0]),
+            "consensus timestamps increase: {sent:?}"
+        );
+        c.mine_empty(now);
+        assert!(c.latest_block().consensus_timestamp > sent[2]);
     }
 
     #[test]
