@@ -262,9 +262,12 @@ Both: rebase on `dev` daily; PR #39 and #15 touch `chainSigner.ts` — read befo
 
 ## 13b. Red-team findings folded in (2026-09-07)
 
-- **Deploy target.** scaffold-hbar has no network entry for `localhost:7546`; `hardhat` is forking
-  mode, `localhost` fires the HTS deploy. Dogfood recipe: a PRD with no contract deploy (the x402
-  PRD is HCS + transfers) or the foundry flavor (`forge create --rpc-url`). Third contribution,
+- **Deploy target — resolved 2026-09-07 by running `init`.** The harness's default template,
+  `templates/hedera-demo`, ships with `solidityFramework: none` and only `packages/nextjs`; its
+  own outro says "no contract deploy is required". It talks to Hedera through native services —
+  `@hiero-ledger/sdk` over gRPC and the mirror REST — which is precisely Hanvil's surface. The
+  dogfood recipe uses this template; no hardhat network entry is needed. The scaffold-hbar
+  `hederaLocal` PR remains a Day 5 extra for the Solidity flavors. Third contribution,
   Day 5 only if G3 passed: scaffold-hbar PR `feat: hederaLocal network` — hardhat network
   `{ url: HEDERA_LOCAL_RPC_URL ?? http://127.0.0.1:7546, chainId: 298 }`, nextjs chain 298 with
   `NEXT_PUBLIC_HEDERA_LOCAL_RPC_URL`, mirror `HEDERA_MIRROR_LOCAL_URL`.

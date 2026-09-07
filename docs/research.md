@@ -275,3 +275,28 @@ alloy-primitives 1.7.2, alloy-consensus 2.4.1, alloy-rlp 0.3.16, k256 0.14.0, cl
 3. revm 43 `Cargo.toml` alloy pins (`cargo tree` after `cargo add revm@43`).
 4. Blocky402 testnet: Discord or `curl https://api.blocky402.com/supported` again.
 5. `npx hedera-harness@next doctor` + one trivial run on testnet — the harness itself works.
+
+## 14. Day 0 findings (2026-09-07)
+
+- `npx hedera-harness@next init smoke-app --template hedera-demo` completes on this machine
+  (yarn 3.2.3 via `corepack enable`; install 163 s). `doctor` is all green: recipe schema v3,
+  `claude` agent on PATH, bundled prompts. The harness runs; the stop-condition is cleared.
+- Toolchain: Rust 1.98.1 installed via rustup. revm 43.0.0 requires Rust ≥ 1.91; `rust-version`
+  is 1.91. alloy-primitives 1.7.2 pins `k256 0.13.4`; hanvil uses the same so one copy is built.
+  `tonic-prost` 0.14.6 needs ≥ 1.88.
+- Proto tree: 130 files after adding `services/auxiliary/**`, `services/state/{hints,history}/*_types.proto`
+  and `platform/event/state_signature_transaction.proto`. All 421 non-google imports are
+  `services/…`-relative, so one include root (`proto/`) compiles without shadowing.
+- Machine: 10 cores, 16 GB RAM — exactly hiero-local-node's stated minimum; Docker present.
+  "Works with hiero-local-node" stays "by construction" unless a run is attempted with everything
+  else closed.
+- `templates/hedera-demo` (the harness's default `init` template): `template.json` declares
+  `solidityFramework: none`; the tree is `packages/nextjs` only. The recipe skeleton's
+  `chainValidation` block (v3) is `enabled / network: testnet / operator: {accountIdEnv,
+  privateKeyEnv}` with the comment "Testnet only." — PR 1 also edits that skeleton comment.
+- SDK paid queries, settled (`hiero-sdk-js/src/query/Query.js:295-350`): when `_isPaymentRequired()`
+  (true by default; false for `AccountBalanceQuery` and `TransactionReceiptQuery`) the SDK first
+  calls `getCost()` — a `COST_ANSWER` round-trip — then **always** builds a `CryptoTransfer`
+  payment for that cost, even zero, signs it with the operator and attaches it as
+  `QueryHeader.payment` on the `ANSWER_ONLY` request. Hanvil therefore answers `COST_ANSWER`
+  with `cost: 0` and, on `ANSWER_ONLY`, decodes the payment and ignores it. No special casing.
