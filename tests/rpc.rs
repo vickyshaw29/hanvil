@@ -52,7 +52,8 @@ impl Node {
     }
 
     fn rpc(&self, method: &str, params: Value) -> Value {
-        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }).to_string();
+        let body =
+            json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }).to_string();
         let mut stream = TcpStream::connect(("127.0.0.1", self.port)).expect("connect");
         write!(
             stream,
@@ -124,7 +125,10 @@ fn sign_legacy(node: &Node, to: Option<Address>, input: Vec<u8>, value_tinybar: 
         call["to"] = json!(format!("{to:#x}"));
     }
     if value_tinybar > 0 {
-        call["value"] = json!(format!("0x{:x}", u128::from(value_tinybar) * WEIBAR_PER_TINYBAR));
+        call["value"] = json!(format!(
+            "0x{:x}",
+            u128::from(value_tinybar) * WEIBAR_PER_TINYBAR
+        ));
     }
     let gas = hex_u64(&node.result("eth_estimateGas", json!([call])));
     let tx = TxLegacy {
@@ -142,7 +146,10 @@ fn sign_legacy(node: &Node, to: Option<Address>, input: Vec<u8>, value_tinybar: 
     let r = U256::from_be_slice(&sig.r().to_bytes());
     let s = U256::from_be_slice(&sig.s().to_bytes());
     let signed = tx.into_signed(Signature::new(r, s, recovery.is_y_odd()));
-    format!("0x{}", hex::encode(TxEnvelope::Legacy(signed).encoded_2718()))
+    format!(
+        "0x{}",
+        hex::encode(TxEnvelope::Legacy(signed).encoded_2718())
+    )
 }
 
 fn send(node: &Node, to: Option<Address>, input: Vec<u8>, value_tinybar: u64) -> Value {
@@ -157,30 +164,49 @@ fn send(node: &Node, to: Option<Address>, input: Vec<u8>, value_tinybar: u64) ->
 fn deploy_call_log_snapshot_revert_and_time_travel() {
     let node = Node::boot();
     let fixture = counter_fixture();
-    let init_code = hex::decode(fixture["bytecode"].as_str().unwrap().trim_start_matches("0x")).unwrap();
+    let init_code = hex::decode(
+        fixture["bytecode"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("0x"),
+    )
+    .unwrap();
 
     assert_eq!(node.result("eth_chainId", json!([])), json!("0x12a"));
     assert_eq!(node.result("eth_blockNumber", json!([])), json!("0x0"));
     let balance_before = hex_u256(&node.result("eth_getBalance", json!([SENDER, "latest"])));
-    assert_eq!(balance_before, U256::from(10_000u64) * U256::from(10u64).pow(U256::from(18)));
+    assert_eq!(
+        balance_before,
+        U256::from(10_000u64) * U256::from(10u64).pow(U256::from(18))
+    );
 
     // Deploy.
     let receipt = send(&node, None, init_code, 0);
     assert_eq!(receipt["status"], json!("0x1"));
     assert_eq!(receipt["blockNumber"], json!("0x1"));
-    let contract: Address = receipt["contractAddress"].as_str().unwrap().parse().unwrap();
+    let contract: Address = receipt["contractAddress"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
     let code = node.result("eth_getCode", json!([format!("{contract:#x}"), "latest"]));
     assert_eq!(code, json!(fixture["deployedBytecode"]));
 
     // count() == 0, then increment() emits one log.
     let count_call = json!({ "to": format!("{contract:#x}"), "data": format!("0x{}", hex::encode(selector("count()"))) });
-    assert_eq!(hex_u64(&node.result("eth_call", json!([count_call, "latest"]))), 0);
+    assert_eq!(
+        hex_u64(&node.result("eth_call", json!([count_call, "latest"]))),
+        0
+    );
     let receipt = send(&node, Some(contract), selector("increment()").to_vec(), 0);
     assert_eq!(receipt["status"], json!("0x1"));
     assert_eq!(receipt["logs"].as_array().unwrap().len(), 1);
     let topic0 = format!("{:#x}", keccak256("Incremented(address,uint256)"));
     assert_eq!(receipt["logs"][0]["topics"][0], json!(topic0));
-    assert_eq!(hex_u64(&node.result("eth_call", json!([count_call, "latest"]))), 1);
+    assert_eq!(
+        hex_u64(&node.result("eth_call", json!([count_call, "latest"]))),
+        1
+    );
 
     // eth_getLogs by address and by topic; the block carries the bloom.
     let logs = node.result(
@@ -207,43 +233,76 @@ fn deploy_call_log_snapshot_revert_and_time_travel() {
     );
     assert_eq!(error["code"], json!(3));
     let expected_selector = format!("0x{}", hex::encode(selector("TooHigh(uint256,uint256)")));
-    assert!(error["data"].as_str().unwrap().starts_with(&expected_selector));
+    assert!(
+        error["data"]
+            .as_str()
+            .unwrap()
+            .starts_with(&expected_selector)
+    );
 
     // Snapshot, mutate, revert: count, block number and nonce all go back.
     let snapshot = node.result("evm_snapshot", json!([]));
     assert_eq!(snapshot, json!("0x0"));
     send(&node, Some(contract), selector("increment()").to_vec(), 0);
-    assert_eq!(hex_u64(&node.result("eth_call", json!([count_call, "latest"]))), 2);
+    assert_eq!(
+        hex_u64(&node.result("eth_call", json!([count_call, "latest"]))),
+        2
+    );
     assert_eq!(node.result("eth_blockNumber", json!([])), json!("0x3"));
     assert_eq!(node.result("evm_revert", json!([snapshot])), json!(true));
-    assert_eq!(hex_u64(&node.result("eth_call", json!([count_call, "latest"]))), 1);
+    assert_eq!(
+        hex_u64(&node.result("eth_call", json!([count_call, "latest"]))),
+        1
+    );
     assert_eq!(node.result("eth_blockNumber", json!([])), json!("0x2"));
-    assert_eq!(node.result("eth_getTransactionCount", json!([SENDER, "latest"])), json!("0x2"));
-    assert_eq!(node.result("evm_revert", json!([snapshot])), json!(false), "consumed");
+    assert_eq!(
+        node.result("eth_getTransactionCount", json!([SENDER, "latest"])),
+        json!("0x2")
+    );
+    assert_eq!(
+        node.result("evm_revert", json!([snapshot])),
+        json!(false),
+        "consumed"
+    );
 
     // Time travel: +3600 s then an empty block.
-    let before = hex_u64(&node.result("eth_getBlockByNumber", json!(["latest", false]))["timestamp"]);
+    let before =
+        hex_u64(&node.result("eth_getBlockByNumber", json!(["latest", false]))["timestamp"]);
     assert_eq!(node.result("evm_increaseTime", json!([3600])), json!(3600));
     assert_eq!(node.result("evm_mine", json!([])), json!("0x0"));
-    let after = hex_u64(&node.result("eth_getBlockByNumber", json!(["latest", false]))["timestamp"]);
+    let after =
+        hex_u64(&node.result("eth_getBlockByNumber", json!(["latest", false]))["timestamp"]);
     assert!(after >= before + 3600, "{after} < {before} + 3600");
 
     // Fees: sender paid gas * price; the fee collector 0.0.98 holds it.
     let paid = balance_before - hex_u256(&node.result("eth_getBalance", json!([SENDER, "latest"])));
-    let collector = hex_u256(&node.result("eth_getBalance", json!(["0x0000000000000000000000000000000000000062", "latest"])));
+    let collector = hex_u256(&node.result(
+        "eth_getBalance",
+        json!(["0x0000000000000000000000000000000000000062", "latest"]),
+    ));
     assert_eq!(paid, collector, "fees are collected, not burned");
-    assert_eq!(paid % U256::from(WEIBAR_PER_TINYBAR), U256::ZERO, "whole tinybar");
+    assert_eq!(
+        paid % U256::from(WEIBAR_PER_TINYBAR),
+        U256::ZERO,
+        "whole tinybar"
+    );
 }
 
 #[test]
 fn value_transfer_and_hollow_account() {
     let node = Node::boot();
-    let fresh: Address = "0x1234567890123456789012345678901234567890".parse().unwrap();
+    let fresh: Address = "0x1234567890123456789012345678901234567890"
+        .parse()
+        .unwrap();
     let receipt = send(&node, Some(fresh), Vec::new(), 100_000_000);
     assert_eq!(receipt["status"], json!("0x1"));
     assert_eq!(receipt["gasUsed"], json!("0x5208"));
-    let balance = hex_u256(&node.result("eth_getBalance", json!([format!("{fresh:#x}"), "latest"])));
-    assert_eq!(balance, U256::from(100_000_000u64) * U256::from(WEIBAR_PER_TINYBAR));
+    let balance =
+        hex_u256(&node.result("eth_getBalance", json!([format!("{fresh:#x}"), "latest"])));
+    assert_eq!(
+        balance,
+        U256::from(100_000_000u64) * U256::from(WEIBAR_PER_TINYBAR)
+    );
 }
 
 #[test]
@@ -261,13 +320,24 @@ fn fractional_tinybar_value_is_rejected_before_execution() {
 fn impersonated_and_unknown_senders() {
     let node = Node::boot();
     let ghost = "0x1111111111111111111111111111111111111111";
-    let refused = node.error("eth_sendTransaction", json!([{ "from": ghost, "to": SENDER, "value": "0x0" }]));
+    let refused = node.error(
+        "eth_sendTransaction",
+        json!([{ "from": ghost, "to": SENDER, "value": "0x0" }]),
+    );
     assert_eq!(refused["code"], json!(-32000));
-    assert!(refused["message"].as_str().unwrap().contains("anvil_impersonateAccount"));
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("anvil_impersonateAccount")
+    );
 
     node.result("anvil_impersonateAccount", json!([ghost]));
     node.result("anvil_setBalance", json!([ghost, "0x21e19e0c9bab2400000"]));
-    let hash = node.result("eth_sendTransaction", json!([{ "from": ghost, "to": SENDER, "value": "0x2540be400", "gas": "0x5208" }]));
+    let hash = node.result(
+        "eth_sendTransaction",
+        json!([{ "from": ghost, "to": SENDER, "value": "0x2540be400", "gas": "0x5208" }]),
+    );
     let receipt = node.result("eth_getTransactionReceipt", json!([hash]));
     assert_eq!(receipt["status"], json!("0x1"));
     assert_eq!(receipt["from"], json!(ghost));
@@ -287,8 +357,22 @@ fn relay_unsupported_methods_and_historical_state() {
     node.result("evm_mine", json!([]));
     let error = node.error("eth_getBalance", json!([SENDER, "0x0"]));
     assert_eq!(error["code"], json!(-32000));
-    assert!(error["message"].as_str().unwrap().contains("historical state"));
-    assert_eq!(node.result("eth_getBlockByNumber", json!(["0x999", false])), Value::Null);
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("historical state")
+    );
+    assert_eq!(
+        node.result("eth_getBlockByNumber", json!(["0x999", false])),
+        Value::Null
+    );
     let past_hash = B256::ZERO;
-    assert_eq!(node.result("eth_getBlockByHash", json!([format!("{past_hash:#x}"), false])), Value::Null);
+    assert_eq!(
+        node.result(
+            "eth_getBlockByHash",
+            json!([format!("{past_hash:#x}"), false])
+        ),
+        Value::Null
+    );
 }

@@ -334,3 +334,8 @@ alloy-primitives 1.7.2, alloy-consensus 2.4.1, alloy-rlp 0.3.16, k256 0.14.0, cl
   first-launch check). Binary 5.6 MB.
 - Blocky402 `/supported` re-checked 2026-09-07 afternoon: still `hedera:mainnet` only. Discord
   question still open (his action).
+- **The repo's hooks only fire when Claude Code is started inside `hanvil/`.** Day 1 ran from
+  `~/Desktop/cv`, so `.claude/hooks/pre-commit-gate.sh` never executed and `tests/rpc.rs` went out
+  unformatted; CI caught it on `cargo fmt --check` (runs 34104047792, 34104112619). Until the
+  session is started from this folder, run `cargo fmt --all && cargo clippy --all-targets -- -D
+  warnings` by hand before every commit.
