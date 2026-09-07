@@ -10,7 +10,7 @@ use axum::response::Json;
 use serde_json::{Value, json};
 
 use super::shapes::{self, timestamp};
-use super::{Answer, Error, Order, Params, page};
+use super::{Answer, Error, Order, Params, page, submitted};
 use crate::evm::units::Tinybar;
 use crate::serve::Shared;
 use crate::state::{Chain, EntityId, NODE, TxRecord};
@@ -32,11 +32,17 @@ pub async fn list(State(chain): State<Shared>, params: Params) -> Answer {
         Some(_) => return Err(Error::invalid_parameter("result")),
     };
 
-    // Every record Hanvil holds today is an ETHEREUMTRANSACTION; another type matches nothing.
-    if kind.as_deref().is_some_and(|k| k != NAME) {
-        return Ok(Json(
-            json!({ "transactions": [], "links": shapes::links() }),
-        ));
+    if let Some(kind) = kind.as_deref() {
+        if !TRANSACTION_TYPES.contains(&kind) {
+            return Err(Error::invalid_parameter("transactiontype"));
+        }
+        // Every record Hanvil holds today is an ETHEREUMTRANSACTION. A real type it never
+        // records has no matches, which is an empty page rather than an error.
+        if kind != NAME {
+            return Ok(Json(
+                json!({ "transactions": [], "links": shapes::links() }),
+            ));
+        }
     }
 
     let chain = chain.read();
@@ -74,9 +80,83 @@ pub async fn by_id(State(chain): State<Shared>, Path(id): Path<String>) -> Answe
 /// The only transaction type Hanvil records today. HAPI bodies arrive on Day 3.
 pub const NAME: &str = "ETHEREUMTRANSACTION";
 
+/// Every value `?transactiontype=` accepts, copied from `openapi.yml:4063` TransactionTypes. A
+/// type on this list that Hanvil never records answers with an empty page; a type that is not on
+/// it is a caller's typo and answers 400.
+const TRANSACTION_TYPES: [&str; 68] = [
+    "ATOMICBATCH",
+    "CONSENSUSCREATETOPIC",
+    "CONSENSUSDELETETOPIC",
+    "CONSENSUSSUBMITMESSAGE",
+    "CONSENSUSUPDATETOPIC",
+    "CONTRACTCALL",
+    "CONTRACTCREATEINSTANCE",
+    "CONTRACTDELETEINSTANCE",
+    "CONTRACTUPDATEINSTANCE",
+    "CRSPUBLICATION",
+    "CRYPTOADDLIVEHASH",
+    "CRYPTOAPPROVEALLOWANCE",
+    "CRYPTOCREATEACCOUNT",
+    "CRYPTODELETE",
+    "CRYPTODELETEALLOWANCE",
+    "CRYPTODELETELIVEHASH",
+    "CRYPTOTRANSFER",
+    "CRYPTOUPDATEACCOUNT",
+    "ETHEREUMTRANSACTION",
+    "FILEAPPEND",
+    "FILECREATE",
+    "FILEDELETE",
+    "FILEUPDATE",
+    "FREEZE",
+    "HINTSKEYPUBLICATION",
+    "HINTSPARTIALSIGNATURE",
+    "HINTSPREPROCESSINGVOTE",
+    "HISTORYPROOFKEYPUBLICATION",
+    "HISTORYPROOFSIGNATURE",
+    "HISTORYPROOFVOTE",
+    "HOOKSTORE",
+    "LEDGERIDPUBLICATION",
+    "MIGRATIONROOTHASHVOTE",
+    "NODECREATE",
+    "NODEDELETE",
+    "NODESTAKEUPDATE",
+    "NODEUPDATE",
+    "REGISTEREDNODECREATE",
+    "REGISTEREDNODEDELETE",
+    "REGISTEREDNODEUPDATE",
+    "SCHEDULECREATE",
+    "SCHEDULEDELETE",
+    "SCHEDULESIGN",
+    "STATESIGNATURETRANSACTION",
+    "SYSTEMDELETE",
+    "SYSTEMUNDELETE",
+    "TOKENAIRDROP",
+    "TOKENASSOCIATE",
+    "TOKENBURN",
+    "TOKENCANCELAIRDROP",
+    "TOKENCLAIMAIRDROP",
+    "TOKENCREATION",
+    "TOKENDELETION",
+    "TOKENDISSOCIATE",
+    "TOKENFEESCHEDULEUPDATE",
+    "TOKENFREEZE",
+    "TOKENGRANTKYC",
+    "TOKENMINT",
+    "TOKENPAUSE",
+    "TOKENREJECT",
+    "TOKENREVOKEKYC",
+    "TOKENUNFREEZE",
+    "TOKENUNPAUSE",
+    "TOKENUPDATE",
+    "TOKENUPDATENFTS",
+    "TOKENWIPE",
+    "UNCHECKEDSUBMIT",
+    "UTILPRNG",
+];
+
 /// `openapi.yml:4236` Transaction, as an EVM transaction fills it in.
 pub(super) fn record(chain: &Chain, tx: &TxRecord) -> Value {
-    let submitted = tx.submitted();
+    let submitted = submitted::decode(tx);
     let fee = fee(tx);
     json!({
         "bytes": Value::Null,
@@ -128,7 +208,7 @@ fn entity_id(chain: &Chain, tx: &TxRecord) -> Option<EntityId> {
     if let Some(created) = tx.receipt.contract_address {
         return chain.contract_id_by_evm(&created);
     }
-    chain.entity_by_evm(&tx.submitted().to?)
+    chain.entity_by_evm(&submitted::decode(tx).to?)
 }
 
 /// The payer's entity id. Every sender that can pay for gas has an account.
@@ -148,7 +228,7 @@ pub(super) fn transaction_id(chain: &Chain, tx: &TxRecord) -> String {
 fn transfers(chain: &Chain, tx: &TxRecord) -> Value {
     use crate::state::FEE_COLLECTOR;
 
-    let submitted = tx.submitted();
+    let submitted = submitted::decode(tx);
     let fee = fee(tx).0 as i128;
     let value = if tx.receipt.success {
         submitted.value.0 as i128

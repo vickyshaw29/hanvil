@@ -7,7 +7,7 @@ use axum::response::Json;
 use serde_json::{Value, json};
 
 use super::shapes::{self, Reference, timestamp, timestamp_range};
-use super::{Answer, Error, Order, Params, page, transactions};
+use super::{Answer, Error, Order, Params, page, submitted, transactions};
 use crate::serve::Shared;
 use crate::state::{Chain, EntityId, StoredLog, TxRecord};
 
@@ -127,12 +127,12 @@ fn resolve(chain: &Chain, reference: &Reference) -> Option<(EntityId, Address)> 
 
 /// Whether the transaction called or created this contract.
 fn touches(tx: &TxRecord, address: Address) -> bool {
-    tx.receipt.contract_address == Some(address) || tx.submitted().to == Some(address)
+    tx.receipt.contract_address == Some(address) || submitted::decode(tx).to == Some(address)
 }
 
 /// `openapi.yml:2367` ContractResult; `details` adds the fields ContractResultDetails carries.
 fn result_body(chain: &Chain, tx: &TxRecord, details: bool) -> Value {
-    let submitted = tx.submitted();
+    let submitted = submitted::decode(tx);
     let contract = tx.receipt.contract_address.or(submitted.to);
     let block = chain.block_by_number(tx.block_number);
     let mut body = json!({

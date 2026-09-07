@@ -1,13 +1,10 @@
 //! Blocks, transactions, receipts and logs as the chain stores them. Rendering to the JSON-RPC
 //! or mirror shapes happens in the servers; nothing here is wire format.
 
-use alloy_consensus::{Transaction as _, TxEnvelope};
-use alloy_eips::eip2718::Decodable2718 as _;
-use alloy_primitives::{Address, B256, Bloom, Bytes, Signature, U256, keccak256};
+use alloy_primitives::{Address, B256, Bloom, Bytes, U256, keccak256};
 use serde::{Deserialize, Serialize};
 
 use super::time::Timestamp;
-use crate::evm::units::Tinybar;
 
 /// One block. Hanvil mines one block per transaction (automine) or on `evm_mine`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -97,87 +94,6 @@ pub struct TxRecord {
     pub consensus_timestamp: Timestamp,
     /// Outcome.
     pub receipt: Receipt,
-}
-
-/// One transaction as it was submitted, in the chain's own units, whichever envelope carried it.
-/// Decoding the raw bytes is the only way to recover these; every renderer needs the same set.
-pub struct Submitted {
-    /// EIP-2718 type: 0 legacy, 1 access-list, 2 dynamic-fee.
-    pub tx_type: u8,
-    /// Sender nonce.
-    pub nonce: u64,
-    /// Gas limit.
-    pub gas_limit: u64,
-    /// Gas price in tinybar. For a 1559 transaction, the max fee.
-    pub gas_price: Tinybar,
-    /// Priority fee in tinybar, when the envelope carried one.
-    pub priority_fee: Option<Tinybar>,
-    /// Value in tinybar.
-    pub value: Tinybar,
-    /// Callee; `None` for a contract creation.
-    pub to: Option<Address>,
-    /// Calldata or init code.
-    pub input: Bytes,
-    /// Chain id, absent on a pre-EIP-155 legacy transaction.
-    pub chain_id: Option<u64>,
-    /// The signature, absent for `eth_sendTransaction`.
-    pub signature: Option<Signature>,
-}
-
-impl TxRecord {
-    /// The submitted transaction with weibar amounts converted to tinybar.
-    pub fn submitted(&self) -> Submitted {
-        match &self.body {
-            TxBody::Signed(raw) => match TxEnvelope::decode_2718(&mut &raw[..]) {
-                Ok(envelope) => Submitted {
-                    tx_type: envelope.tx_type() as u8,
-                    nonce: envelope.nonce(),
-                    gas_limit: envelope.gas_limit(),
-                    gas_price: Tinybar::from_weibar_floor(U256::from(envelope.max_fee_per_gas()))
-                        .unwrap_or_default(),
-                    priority_fee: envelope
-                        .max_priority_fee_per_gas()
-                        .map(|p| Tinybar::from_weibar_floor(U256::from(p)).unwrap_or_default()),
-                    value: Tinybar::from_weibar_floor(envelope.value()).unwrap_or_default(),
-                    to: envelope.to(),
-                    input: envelope.input().clone(),
-                    chain_id: envelope.chain_id(),
-                    signature: Some(*envelope.signature()),
-                },
-                // Only bytes this chain already decoded and executed are stored.
-                Err(_) => Submitted::empty(),
-            },
-            TxBody::Unsigned(tx) => Submitted {
-                tx_type: 0,
-                nonce: tx.nonce,
-                gas_limit: tx.gas_limit,
-                gas_price: Tinybar(tx.gas_price),
-                priority_fee: None,
-                value: Tinybar(tx.value),
-                to: tx.to,
-                input: tx.input.clone(),
-                chain_id: None,
-                signature: None,
-            },
-        }
-    }
-}
-
-impl Submitted {
-    fn empty() -> Self {
-        Self {
-            tx_type: 0,
-            nonce: 0,
-            gas_limit: 0,
-            gas_price: Tinybar(0),
-            priority_fee: None,
-            value: Tinybar(0),
-            to: None,
-            input: Bytes::new(),
-            chain_id: None,
-            signature: None,
-        }
-    }
 }
 
 /// Execution outcome of one transaction.
