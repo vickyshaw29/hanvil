@@ -1,0 +1,17 @@
+{
+  "address": "0x23f5e49569a835d7bf9aefd30e4f60cdd570f225",
+  "block_hash": "<block_hash>",
+  "block_number": 2,
+  "bloom": "<bloom>",
+  "contract_id": "0.0.1032",
+  "data": "0x0000000000000000000000000000000000000000000000000000000000000001",
+  "index": 0,
+  "root_contract_id": "0.0.1032",
+  "timestamp": "<timestamp>",
+  "topics": [
+    "0x38ac789ed44572701765277c4d0970f2db1c1a571ed39e84358095ae4eaa5420",
+    "0x00000000000000000000000067d8d32e9bf1a9968a5ff53b87d777aa8ebbee69"
+  ],
+  "transaction_hash": "0x0362b4d641da26ff57f107acc4dd1e5859b5b5fb8f98405636112e1c6c0257a9",
+  "transaction_index": 0
+}

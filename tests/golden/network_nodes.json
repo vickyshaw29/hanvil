@@ -1,0 +1,29 @@
+{
+  "links": {
+    "next": null
+  },
+  "nodes": [
+    {
+      "admin_key": null,
+      "associated_registered_nodes": [],
+      "decline_reward": false,
+      "description": "hanvil",
+      "file_id": "0.0.102",
+      "grpc_proxy_endpoint": null,
+      "max_stake": null,
+      "memo": "0.0.3",
+      "min_stake": null,
+      "node_account_id": "0.0.3",
+      "node_cert_hash": null,
+      "node_id": 0,
+      "public_key": null,
+      "reward_rate_start": 0,
+      "service_endpoints": [],
+      "stake": 0,
+      "stake_not_rewarded": 0,
+      "stake_rewarded": 0,
+      "staking_period": null,
+      "timestamp": "<timestamp>"
+    }
+  ]
+}

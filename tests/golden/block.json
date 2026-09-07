@@ -1,0 +1,12 @@
+{
+  "count": 0,
+  "gas_used": 0,
+  "hapi_version": null,
+  "hash": "<hash>",
+  "logs_bloom": "<logs_bloom>",
+  "name": "<name>",
+  "number": 1,
+  "previous_hash": "<previous_hash>",
+  "size": 0,
+  "timestamp": "<timestamp>"
+}

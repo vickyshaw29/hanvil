@@ -1,0 +1,38 @@
+{
+  "bytes": null,
+  "charged_tx_fee": 1491000,
+  "consensus_timestamp": "<consensus_timestamp>",
+  "entity_id": "0.0.1002",
+  "max_fee": "1491000",
+  "memo_base64": null,
+  "name": "<name>",
+  "nft_transfers": [],
+  "node": "0.0.3",
+  "nonce": 0,
+  "parent_consensus_timestamp": null,
+  "result": "SUCCESS",
+  "scheduled": false,
+  "staking_reward_transfers": [],
+  "token_transfers": [],
+  "transaction_hash": "rW8l704omdCcUw7dMDJJFDxioqbylY5uLhCU6+bRmOg=",
+  "transaction_id": "<transaction_id>",
+  "transfers": [
+    {
+      "account": "0.0.98",
+      "amount": 1491000,
+      "is_approval": false
+    },
+    {
+      "account": "0.0.1002",
+      "amount": 100000000,
+      "is_approval": false
+    },
+    {
+      "account": "0.0.1012",
+      "amount": -101491000,
+      "is_approval": false
+    }
+  ],
+  "valid_duration_seconds": "120",
+  "valid_start_timestamp": "<valid_start_timestamp>"
+}

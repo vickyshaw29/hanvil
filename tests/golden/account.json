@@ -1,0 +1,28 @@
+{
+  "account": "0.0.1012",
+  "alias": null,
+  "auto_renew_period": 7776000,
+  "balance": "<balance>",
+  "created_timestamp": "<created_timestamp>",
+  "decline_reward": false,
+  "delegation_address": null,
+  "deleted": false,
+  "ethereum_nonce": 0,
+  "evm_address": "0x67d8d32e9bf1a9968a5ff53b87d777aa8ebbee69",
+  "expiry_timestamp": "<expiry_timestamp>",
+  "key": {
+    "_type": "ECDSA_SECP256K1",
+    "key": "02b3c641418e89452cd5202adfd4758f459acb8e364f741fd16cd2db79835d39d2"
+  },
+  "links": {
+    "next": null
+  },
+  "max_automatic_token_associations": 0,
+  "memo": "",
+  "pending_reward": 0,
+  "receiver_sig_required": false,
+  "stake_period_start": null,
+  "staked_account_id": null,
+  "staked_node_id": null,
+  "transactions": []
+}
