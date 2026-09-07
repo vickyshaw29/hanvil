@@ -64,8 +64,9 @@ impl<'de> Deserialize<'de> for Key {
 pub struct Account {
     /// Entity id.
     pub id: EntityId,
-    /// Signing key.
-    pub key: Key,
+    /// Signing key. `None` for hollow accounts (created by a transfer to an unknown EVM
+    /// address) and for the system accounts Hanvil never signs for.
+    pub key: Option<Key>,
     /// EVM alias (keccak of the public key) when the account was created with one.
     pub alias: Option<Address>,
     /// Balance in tinybar. Authoritative; the EVM view is derived from this.

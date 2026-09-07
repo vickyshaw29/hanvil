@@ -24,12 +24,21 @@ async fn main() -> anyhow::Result<()> {
     let args = cli::Args::parse();
     init_tracing(args.silent);
 
-    let chain = state::Chain::genesis(&args.genesis()).context("building genesis state")?;
+    let clock: Arc<dyn state::Clock> = Arc::new(state::time::SystemClock);
+    let chain =
+        state::Chain::genesis(&args.genesis(clock.now())).context("building genesis state")?;
     let shared: rpc::Shared = Arc::new(RwLock::new(chain));
 
-    let rpc = rpc::serve(Arc::clone(&shared), &args.host, args.port)
-        .await
-        .context("starting JSON-RPC listener")?;
+    let rpc = rpc::serve(
+        rpc::App {
+            chain: Arc::clone(&shared),
+            clock,
+        },
+        &args.host,
+        args.port,
+    )
+    .await
+    .context("starting JSON-RPC listener")?;
 
     if !args.silent {
         cli::banner(&args, &shared.read(), rpc.local_addr, started.elapsed());

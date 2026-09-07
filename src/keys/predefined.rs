@@ -49,6 +49,16 @@ pub const ED25519: [&str; 10] = [
     "0x9a07bbdbb62e24686d2a4259dc88e38438e2c7a1ba167b147ad30ac540b0a3cd",
 ];
 
+/// The treasury (0.0.2) key hiero-local-node's relay operates with: `RELAY_OPERATOR_KEY_MAIN`
+/// in its `.env`, a DER-wrapped ED25519 seed. The seed is the last 32 bytes.
+pub const TREASURY_ED25519_SEED: &str =
+    "0x91132178e72057a1d7528025956fe39b0b847f200ab59b2fdd367017f3087137";
+
+/// Public key of the treasury account.
+pub fn treasury_key() -> Result<crate::state::Key, Error> {
+    ed25519_public(&decode_hex(TREASURY_ED25519_SEED)?)
+}
+
 /// Predefined accounts, `per_type` of each kind, ids allocated sequentially from 1002 in the
 /// order ECDSA, ECDSA-alias, ED25519 — exactly how hiero-local-node numbers them.
 pub fn accounts(per_type: u8, balance: Tinybar) -> Result<Vec<Account>, Error> {
@@ -89,7 +99,7 @@ fn dev_account(
 ) -> Account {
     Account {
         id,
-        key,
+        key: Some(key),
         alias,
         balance,
         nonce: 0,

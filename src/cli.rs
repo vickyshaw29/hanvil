@@ -6,7 +6,7 @@ use std::time::Duration;
 use clap::Parser;
 
 use crate::evm::units::Tinybar;
-use crate::state::{Chain, Genesis};
+use crate::state::{Chain, Genesis, Timestamp};
 
 /// Local Hedera network: JSON-RPC, mirror REST and HAPI gRPC from one in-memory chain.
 #[derive(Parser, Debug, Clone)]
@@ -40,6 +40,11 @@ pub struct Args {
     #[arg(long, default_value_t = 10_000)]
     pub balance: u64,
 
+    /// Network gas price in tinybar per gas. Transactions offering less are refused, as on the
+    /// relay. Fees go to 0.0.98.
+    #[arg(long, default_value_t = 71, env = "HANVIL_GAS_PRICE")]
+    pub gas_price: u64,
+
     /// Print nothing.
     #[arg(long)]
     pub silent: bool,
@@ -47,11 +52,13 @@ pub struct Args {
 
 impl Args {
     /// Genesis parameters derived from the flags.
-    pub fn genesis(&self) -> Genesis {
+    pub fn genesis(&self, now: Timestamp) -> Genesis {
         Genesis {
             chain_id: self.chain_id,
             accounts_per_type: self.accounts,
             balance: Tinybar::from_hbar(self.balance),
+            gas_price: Tinybar(self.gas_price),
+            now,
         }
     }
 }

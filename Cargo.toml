@@ -24,7 +24,7 @@ k256 = { version = "0.13", features = ["ecdsa"] }
 parking_lot = "0.12"
 prost = "0.14"
 prost-types = "0.14"
-revm = { version = "43", features = ["std", "serde"] }
+revm = { version = "43", features = ["std", "serde", "optional_balance_check", "optional_block_gas_limit", "optional_no_base_fee"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 sha2 = "0.11"
