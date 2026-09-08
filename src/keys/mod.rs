@@ -1,6 +1,7 @@
 //! Key material: predefined dev accounts and public-key derivation.
 
 pub mod predefined;
+pub mod sig;
 
 use alloy_primitives::{Address, keccak256};
 
