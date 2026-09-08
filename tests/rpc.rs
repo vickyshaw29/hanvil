@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use common::{
     Node, SENDER, WEIBAR_PER_TINYBAR, counter_fixture, hex_u64, hex_u256, selector, send,
+    send_with_gas,
 };
 
 #[test]
@@ -225,4 +226,69 @@ fn relay_unsupported_methods_and_historical_state() {
         ),
         Value::Null
     );
+}
+
+/// `ReceiptInfo` in the relay's openrpc.json lists these fifteen properties and no others. A
+/// failed transaction gets the same set: neither the relay nor Anvil puts revert data on a
+/// receipt, so a caller reads it from the `eth_call` error or the mirror's contract result.
+#[test]
+fn receipts_carry_the_relay_field_set_on_success_and_on_revert() {
+    const RECEIPT_INFO: [&str; 15] = [
+        "blockHash",
+        "blockNumber",
+        "contractAddress",
+        "cumulativeGasUsed",
+        "effectiveGasPrice",
+        "from",
+        "gasUsed",
+        "logs",
+        "logsBloom",
+        "root",
+        "status",
+        "to",
+        "transactionHash",
+        "transactionIndex",
+        "type",
+    ];
+
+    let node = Node::boot();
+    let init_code = hex::decode(
+        counter_fixture()["bytecode"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("0x"),
+    )
+    .unwrap();
+
+    let deployed = send(&node, None, init_code, 0);
+    assert_eq!(deployed["status"], json!("0x1"));
+    let contract: Address = deployed["contractAddress"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    // `fail()` reverts, so its gas cannot be estimated; 100k covers the revert.
+    let reverted = send_with_gas(
+        &node,
+        Some(contract),
+        selector("fail()").to_vec(),
+        0,
+        100_000,
+    );
+    assert_eq!(reverted["status"], json!("0x0"), "the call reverted");
+
+    for receipt in [&deployed, &reverted] {
+        let mut keys: Vec<&str> = receipt
+            .as_object()
+            .expect("receipt is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys, RECEIPT_INFO,
+            "receipt fields are the relay's, exactly"
+        );
+    }
 }

@@ -144,10 +144,8 @@ pub fn selector(signature: &str) -> [u8; 4] {
     [hash[0], hash[1], hash[2], hash[3]]
 }
 
-/// Sign a legacy transaction with the dev key; returns the EIP-2718 bytes as hex.
+/// Sign a legacy transaction with the dev key, with the gas limit `eth_estimateGas` reports.
 pub fn sign_legacy(node: &Node, to: Option<Address>, input: Vec<u8>, value_tinybar: u64) -> String {
-    let nonce = hex_u64(&node.result("eth_getTransactionCount", json!([SENDER, "latest"])));
-    let gas_price = hex_u256(&node.result("eth_gasPrice", json!([])));
     let mut call = json!({ "from": SENDER, "data": format!("0x{}", hex::encode(&input)) });
     if let Some(to) = to {
         call["to"] = json!(format!("{to:#x}"));
@@ -159,6 +157,20 @@ pub fn sign_legacy(node: &Node, to: Option<Address>, input: Vec<u8>, value_tinyb
         ));
     }
     let gas = hex_u64(&node.result("eth_estimateGas", json!([call])));
+    sign_legacy_with_gas(node, to, input, value_tinybar, gas)
+}
+
+/// Sign a legacy transaction with an explicit gas limit. A transaction that reverts cannot be
+/// estimated — `eth_estimateGas` reports the revert — so a test that wants one mined names the gas.
+pub fn sign_legacy_with_gas(
+    node: &Node,
+    to: Option<Address>,
+    input: Vec<u8>,
+    value_tinybar: u64,
+    gas: u64,
+) -> String {
+    let nonce = hex_u64(&node.result("eth_getTransactionCount", json!([SENDER, "latest"])));
+    let gas_price = hex_u256(&node.result("eth_gasPrice", json!([])));
     let tx = TxLegacy {
         chain_id: Some(298),
         nonce,
@@ -182,6 +194,22 @@ pub fn sign_legacy(node: &Node, to: Option<Address>, input: Vec<u8>, value_tinyb
 
 pub fn send(node: &Node, to: Option<Address>, input: Vec<u8>, value_tinybar: u64) -> Value {
     let raw = sign_legacy(node, to, input, value_tinybar);
+    submit(node, raw)
+}
+
+/// Mine a transaction that is expected to revert, with an explicit gas limit.
+pub fn send_with_gas(
+    node: &Node,
+    to: Option<Address>,
+    input: Vec<u8>,
+    value_tinybar: u64,
+    gas: u64,
+) -> Value {
+    let raw = sign_legacy_with_gas(node, to, input, value_tinybar, gas);
+    submit(node, raw)
+}
+
+fn submit(node: &Node, raw: String) -> Value {
     let hash = node.result("eth_sendRawTransaction", json!([raw]));
     let receipt = node.result("eth_getTransactionReceipt", json!([hash]));
     assert!(!receipt.is_null(), "receipt is available immediately");

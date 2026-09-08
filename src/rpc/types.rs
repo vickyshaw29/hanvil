@@ -425,7 +425,10 @@ fn signed_fields(object: &mut Map<String, Value>, envelope: &TxEnvelope) {
     }
 }
 
-/// Receipt object (`ReceiptInfo` in the relay's openrpc.json).
+/// Receipt object (`ReceiptInfo` in the relay's openrpc.json): that schema's fields and no
+/// others. A failed transaction carries no revert data here, because neither the relay nor Anvil
+/// puts any on a receipt — `eth_call` returns it as `{code: 3, data}`, and the mirror's
+/// `/contracts/results/{hash}` carries it as `error_message`.
 pub fn receipt_json(tx: &TxRecord) -> Value {
     let (tx_type, to) = match &tx.body {
         TxBody::Signed(raw) => {
@@ -433,7 +436,7 @@ pub fn receipt_json(tx: &TxRecord) -> Value {
         }
         TxBody::Unsigned(unsigned) => (0, unsigned.to),
     };
-    let mut object = json!({
+    json!({
         "type": quantity_u64(u64::from(tx_type)),
         "transactionHash": hash(&tx.hash),
         "transactionIndex": quantity_u64(tx.index),
@@ -449,14 +452,7 @@ pub fn receipt_json(tx: &TxRecord) -> Value {
         "root": ZERO_32,
         "status": if tx.receipt.success { "0x1" } else { "0x0" },
         "effectiveGasPrice": weibar_u64(tx.receipt.effective_gas_price),
-    });
-    if !tx.receipt.success {
-        // VERIFY: `ReceiptInfo` in the relay's openrpc.json has no `revertReason` property
-        // (checked 2026-09-08). The field is kept because a caller reading a failed receipt has
-        // nowhere else to find the revert data; if the relay does not send it, drop it.
-        object["revertReason"] = json!(data(&tx.receipt.output));
-    }
-    object
+    })
 }
 
 /// Log object.
