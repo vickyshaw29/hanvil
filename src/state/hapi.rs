@@ -110,14 +110,12 @@ pub enum Status {
     AccountRepeatedInAccountAmounts,
     /// 150 — no topic with that id.
     InvalidTopicId,
-    /// 157 — the topic has a submit key and the message was not signed by it.
-    Unauthorized,
     /// 158 — an empty message.
     InvalidTopicMessage,
-    /// 285 — `cryptoDelete` without a live account to send the balance to.
-    InvalidTransferAccountId,
     /// 256 — the payer was deleted by an earlier `cryptoDelete`.
     PayerAccountDeleted,
+    /// 285 — `cryptoDelete` without a live account to send the balance to.
+    InvalidTransferAccountId,
     /// 332 — the alias is already held by another account.
     AliasAlreadyAssigned,
 }
@@ -153,10 +151,9 @@ impl Status {
             Self::AccountDeleted => 72,
             Self::AccountRepeatedInAccountAmounts => 74,
             Self::InvalidTopicId => 150,
-            Self::Unauthorized => 157,
             Self::InvalidTopicMessage => 158,
-            Self::InvalidTransferAccountId => 285,
             Self::PayerAccountDeleted => 256,
+            Self::InvalidTransferAccountId => 285,
             Self::AliasAlreadyAssigned => 332,
         }
     }
@@ -191,10 +188,9 @@ impl Status {
             Self::AccountDeleted => "ACCOUNT_DELETED",
             Self::AccountRepeatedInAccountAmounts => "ACCOUNT_REPEATED_IN_ACCOUNT_AMOUNTS",
             Self::InvalidTopicId => "INVALID_TOPIC_ID",
-            Self::Unauthorized => "UNAUTHORIZED",
             Self::InvalidTopicMessage => "INVALID_TOPIC_MESSAGE",
-            Self::InvalidTransferAccountId => "INVALID_TRANSFER_ACCOUNT_ID",
             Self::PayerAccountDeleted => "PAYER_ACCOUNT_DELETED",
+            Self::InvalidTransferAccountId => "INVALID_TRANSFER_ACCOUNT_ID",
             Self::AliasAlreadyAssigned => "ALIAS_ALREADY_ASSIGNED",
         }
     }

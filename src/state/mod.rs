@@ -92,16 +92,13 @@ pub const HAPI_FEE: Tinybar = Tinybar(10_000);
 const TOTAL_SUPPLY: Tinybar = Tinybar::from_hbar(50_000_000_000);
 
 /// Metadata for a contract entity; code and storage live in the EVM database. Read by the mirror
-/// REST (`/contracts/{id}`), which lands on Day 2.
+/// REST (`/contracts/{id}`).
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct Contract {
     /// EVM address.
     pub address: Address,
     /// Block in which it was created.
     pub created_block: u64,
-    /// Transaction that created it, when known.
-    pub created_by: Option<B256>,
 }
 
 /// In-memory chain. Cloning it is how snapshots work.
@@ -456,12 +453,7 @@ impl Chain {
 
     /// Read touched balances and nonces back from an execution, allocate ids for new contracts,
     /// and create hollow accounts for fresh addresses that received value.
-    fn sync_db_into_accounts(
-        &mut self,
-        state: &revm::state::EvmState,
-        tx_hash: Option<B256>,
-        created_at: Timestamp,
-    ) {
+    fn sync_db_into_accounts(&mut self, state: &revm::state::EvmState, created_at: Timestamp) {
         let block = self.block_number() + 1;
         let mut new_contracts = Vec::new();
         let mut hollow = Vec::new();
@@ -490,7 +482,6 @@ impl Chain {
                 Contract {
                     address,
                     created_block: block,
-                    created_by: tx_hash,
                 },
             );
             self.contract_by_evm.insert(address, id);
@@ -594,7 +585,7 @@ impl Chain {
         let block = self.block_input(timestamp);
         self.sync_accounts_into_db();
         let executed = evm::execute(&mut self.db, self.chain_id, &block, Mode::Transaction, env)?;
-        self.sync_db_into_accounts(&executed.state, Some(hash), consensus_timestamp);
+        self.sync_db_into_accounts(&executed.state, consensus_timestamp);
         self.db.commit(executed.state);
 
         let gas_used = executed.result.tx_gas_used();
@@ -1187,7 +1178,6 @@ impl Chain {
                 Contract {
                     address,
                     created_block: self.block_number(),
-                    created_by: None,
                 },
             );
             self.contract_by_evm.insert(address, id);
