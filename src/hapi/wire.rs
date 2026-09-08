@@ -73,9 +73,6 @@ pub fn submit(
     if deleted {
         return Err(Status::PayerAccountDeleted);
     }
-    if balance < HAPI_FEE {
-        return Err(Status::InsufficientPayerBalance);
-    }
 
     let decoded = decode_body(body.data.as_ref())?;
 
@@ -86,6 +83,12 @@ pub fn submit(
                 return Err(Status::InvalidSignature);
             }
         }
+    }
+
+    // Last, so a transaction that is wrong in some other way is told what is wrong with it
+    // rather than what it could not have afforded.
+    if balance < HAPI_FEE {
+        return Err(Status::InsufficientPayerBalance);
     }
 
     let transaction = Transaction {
@@ -111,16 +114,16 @@ fn required_keys(chain: &Chain, payer: EntityId, body: &Body) -> Result<Vec<Key>
     match body {
         Body::Transfer { amounts } => {
             for (account, _) in amounts.iter().filter(|(_, amount)| *amount < 0) {
+                // An alias with no account has no key to require. Whether such a debit is
+                // legal is `apply_transfer`'s decision, made at consensus, so that the answer
+                // does not change with `--no-sig-verify`.
                 let id = match account {
-                    AccountRef::Id(id) => *id,
-                    AccountRef::Alias(address) => chain
-                        .account_by_evm(address)
-                        .map(|a| a.id)
-                        .ok_or(Status::InvalidAccountId)?,
+                    AccountRef::Id(id) => Some(*id),
+                    AccountRef::Alias(address) => chain.account_by_evm(address).map(|a| a.id),
                 };
-                if id == payer {
+                let Some(id) = id.filter(|id| *id != payer) else {
                     continue;
-                }
+                };
                 if let Some(key) = chain.account(id).and_then(|a| a.key.clone()) {
                     keys.push(key);
                 }
@@ -641,5 +644,78 @@ mod tests {
             submit(&mut chain(), &signed(&body(data)), NOW, true).err(),
             Some(Status::InvalidTopicId)
         );
+    }
+
+    /// The balance check runs last, so a transaction that is wrong in some other way is told so.
+    /// The first version charged the payer's balance before the body and the signatures, which
+    /// answered INSUFFICIENT_PAYER_BALANCE to a body that was never going to be applied.
+    #[test]
+    fn a_broke_payer_is_still_told_what_else_is_wrong() {
+        let mut chain = chain();
+        // Leave the payer with less than the flat fee.
+        chain.set_balance(crate::evm::units::long_zero_address(PAYER), Tinybar(1), NOW);
+
+        let unsupported = proto::transaction_body::Data::TokenCreation(
+            proto::TokenCreateTransactionBody::default(),
+        );
+        assert_eq!(
+            submit(&mut chain, &signed(&body(unsupported)), NOW, true).err(),
+            Some(Status::NotSupported)
+        );
+
+        let transfer = body(transfer(EntityId(1003), 500));
+        assert_eq!(
+            submit(&mut chain, &unsigned(&transfer), NOW, true).err(),
+            Some(Status::InvalidSignature)
+        );
+
+        // With nothing else wrong, the balance is what stops it.
+        assert_eq!(
+            submit(&mut chain, &signed(&transfer), NOW, true).err(),
+            Some(Status::InsufficientPayerBalance)
+        );
+    }
+
+    /// A debit from an alias with no account is refused at consensus, not in the signature check,
+    /// so the payer is charged the same either way. Before, `--no-sig-verify` decided whether the
+    /// fee was taken.
+    #[test]
+    fn an_unknown_alias_debit_costs_the_fee_whether_or_not_signatures_are_checked() {
+        let unknown = Address::repeat_byte(0x42);
+        let data =
+            proto::transaction_body::Data::CryptoTransfer(proto::CryptoTransferTransactionBody {
+                transfers: Some(proto::TransferList {
+                    account_amounts: vec![
+                        proto::AccountAmount {
+                            account_id: Some(proto::AccountId {
+                                shard_num: 0,
+                                realm_num: 0,
+                                account: Some(proto::account_id::Account::Alias(unknown.to_vec())),
+                            }),
+                            amount: -500,
+                            ..Default::default()
+                        },
+                        proto::AccountAmount {
+                            account_id: Some(to_account_id(PAYER)),
+                            amount: 500,
+                            ..Default::default()
+                        },
+                    ],
+                }),
+                token_transfers: Vec::new(),
+            });
+
+        for verify in [true, false] {
+            let mut chain = chain();
+            let before = chain.account(PAYER).expect("payer").balance;
+            let record = submit(&mut chain, &signed(&body(data.clone())), NOW, verify)
+                .expect("precheck passes");
+            assert_eq!(record.status, Status::InvalidAccountId, "verify={verify}");
+            assert_eq!(
+                chain.account(PAYER).expect("payer").balance.0,
+                before.0 - HAPI_FEE.0,
+                "verify={verify}"
+            );
+        }
     }
 }

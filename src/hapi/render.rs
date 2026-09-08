@@ -2,7 +2,7 @@
 
 use super::proto;
 use super::wire::{to_account_id, to_contract_id, to_proto_timestamp, to_topic_id};
-use crate::state::{Account, Chain, EntityId, Record, Status, Topic, hapi};
+use crate::state::{Account, Chain, EntityId, Record, Status, Timestamp, Topic, hapi};
 
 /// 1 ℏ = 12 ¢, the same fixed rate `/api/v1/network/exchangerate` reports
 /// (`src/mirror/network.rs`). Hanvil has no price feed.
@@ -77,6 +77,12 @@ fn created_contract(chain: &Chain, record: &Record) -> Option<proto::ContractId>
     chain.contract_id_by_evm(&created).map(to_contract_id)
 }
 
+/// Seconds an entity lives before it must be renewed. Hedera's default, and what the mirror
+/// reports for an entity that set none (`src/mirror/shapes.rs`). Hanvil never expires anything;
+/// the field exists so a client that reads it sees a time in the future, not the creation
+/// instant.
+const AUTO_RENEW_PERIOD_SECS: u64 = 7_776_000;
+
 /// `CryptoGetInfoResponse.AccountInfo` (`crypto_get_info.proto`).
 pub fn account_info(account: &Account) -> proto::crypto_get_info_response::AccountInfo {
     use crate::evm::units::long_zero_address;
@@ -97,7 +103,10 @@ pub fn account_info(account: &Account) -> proto::crypto_get_info_response::Accou
         // not key aliases, so the field stays empty and the address is in `contractAccountId`.
         // The mirror reports `alias: null` for the same reason (docs/research.md §16).
         ethereum_nonce: account.nonce as i64,
-        expiration_time: Some(to_proto_timestamp(account.created_at)),
+        expiration_time: Some(to_proto_timestamp(Timestamp {
+            secs: account.created_at.secs + AUTO_RENEW_PERIOD_SECS,
+            nanos: account.created_at.nanos,
+        })),
         ..Default::default()
     }
 }
@@ -108,7 +117,15 @@ pub fn topic_info(topic: &Topic) -> proto::ConsensusTopicInfo {
         memo: topic.memo.clone(),
         running_hash: topic.running_hash.as_bytes().to_vec(),
         sequence_number: topic.sequence_number,
-        expiration_time: Some(to_proto_timestamp(topic.created_at)),
+        expiration_time: Some(to_proto_timestamp(Timestamp {
+            secs: topic.created_at.secs
+                + if topic.auto_renew_period > 0 {
+                    topic.auto_renew_period
+                } else {
+                    AUTO_RENEW_PERIOD_SECS
+                },
+            nanos: topic.created_at.nanos,
+        })),
         admin_key: topic.admin_key.as_ref().map(to_proto_key),
         submit_key: topic.submit_key.as_ref().map(to_proto_key),
         auto_renew_period: Some(proto::Duration {

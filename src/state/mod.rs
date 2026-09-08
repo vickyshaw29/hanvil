@@ -795,7 +795,12 @@ impl Chain {
     /// failure leaves nothing half-applied. Always produces a record — prechecks that would stop
     /// a transaction reaching consensus run in `hapi/`, before this is called.
     pub fn apply_hapi(&mut self, tx: Transaction, now: Timestamp) -> Record {
-        let consensus = self.next_consensus(now);
+        // The EVM path allocates its own consensus timestamp when it mines. One transaction has
+        // one timestamp, so an `ethereumTransaction` takes the EVM's rather than a second one.
+        let consensus = match tx.body {
+            Body::Ethereum { .. } => now,
+            _ => self.next_consensus(now),
+        };
         let mut record = Record {
             id: tx.id,
             kind: tx.body.kind(),
@@ -873,6 +878,9 @@ impl Chain {
                 if account == transfer_to {
                     return Err(Status::InvalidTransferAccountId);
                 }
+                if !self.accounts.contains_key(&account) {
+                    return Err(Status::InvalidAccountId);
+                }
                 if !self.is_live(account) {
                     return Err(Status::AccountDeleted);
                 }
@@ -948,7 +956,11 @@ impl Chain {
             Body::Ethereum { rlp } => match self.send_raw(Bytes::from(rlp), consensus) {
                 Ok(hash) => {
                     record.ethereum_hash = hash.to_vec();
-                    let succeeded = self.transaction(&hash).is_some_and(|tx| tx.receipt.success);
+                    let mined = self.transaction(&hash);
+                    let succeeded = mined.is_some_and(|tx| tx.receipt.success);
+                    if let Some(at) = mined.map(|tx| tx.consensus_timestamp) {
+                        record.consensus_timestamp = at;
+                    }
                     if succeeded {
                         Ok(())
                     } else {
@@ -957,7 +969,12 @@ impl Chain {
                         Err(Status::ContractRevertExecuted)
                     }
                 }
-                Err(_) => Err(Status::InvalidTransactionBody),
+                Err(_) => {
+                    // Nothing was mined, so nothing allocated a timestamp; this record still
+                    // needs one that identifies it.
+                    record.consensus_timestamp = self.next_consensus(consensus);
+                    Err(Status::InvalidTransactionBody)
+                }
             },
         }
     }
@@ -1001,7 +1018,14 @@ impl Chain {
                         }
                         resolved.push((id, *amount));
                     }
-                    None if *amount > 0 => created.push((*address, *amount)),
+                    // A credit to an unknown alias creates one hollow account, so naming it
+                    // twice is the same repeat the resolved list rejects below.
+                    None if *amount > 0 => {
+                        if created.iter().any(|(seen, _)| seen == address) {
+                            return Err(Status::AccountRepeatedInAccountAmounts);
+                        }
+                        created.push((*address, *amount));
+                    }
                     None => return Err(Status::InvalidAccountId),
                 },
             }
@@ -1468,6 +1492,108 @@ mod tests {
             c.balance_by_evm(&long_zero_address(EntityId(1002))).0,
             Tinybar::from_hbar(10_000).0 + 1
         );
+    }
+
+    /// One HAPI transaction has one consensus timestamp. `ethereumTransaction` used to take one
+    /// here and let the EVM allocate a second when it mined, so the mirror reported the record
+    /// and the contract result under two different instants.
+    #[test]
+    fn an_ethereum_body_and_its_evm_record_share_one_consensus_timestamp() {
+        let raw = hex::decode("f86b8085a54f4c3c008252089400000000000000000000000000000000000003ea8502540be40080820278a05cdae3a91a661323014df84e1dd7237d54c08b90231f8b9bd0cf1fc3bd542afaa04b4264f936be6811e7a19868ed2eae39480fcd84297d0dc87c37aea6d3b6e96e").unwrap();
+        let mut c = Chain::genesis(&Genesis {
+            chain_id: 298,
+            accounts_per_type: 10,
+            balance: Tinybar::from_hbar(10_000),
+            gas_price: Tinybar(71),
+            now: Timestamp::from_secs(1_700_000_000),
+        })
+        .expect("genesis");
+
+        let record = c.apply_hapi(
+            Transaction {
+                id: TxId {
+                    payer: EntityId(1012),
+                    valid_start: Timestamp::from_secs(1_700_000_001),
+                    nonce: 0,
+                    scheduled: false,
+                },
+                memo: String::new(),
+                max_fee: Tinybar(0),
+                hash: Digest384::default(),
+                valid_duration_seconds: 120,
+                body: Body::Ethereum { rlp: raw },
+            },
+            Timestamp::from_secs(1_700_000_001),
+        );
+
+        assert_eq!(record.status, Status::Success);
+        let hash = B256::from_slice(&record.ethereum_hash);
+        let mined = c.transaction(&hash).expect("the EVM mined it");
+        assert_eq!(record.consensus_timestamp, mined.consensus_timestamp);
+    }
+
+    /// `cryptoDelete` of an id that never existed is INVALID_ACCOUNT_ID (15); ACCOUNT_DELETED (72)
+    /// is for one that did (`response_code.proto:108,398`).
+    #[test]
+    fn deleting_a_missing_account_and_a_deleted_one_answer_differently() {
+        let mut c = chain();
+        let delete = |account: EntityId, at: u64| Transaction {
+            id: TxId {
+                payer: EntityId(1002),
+                valid_start: Timestamp::from_secs(at),
+                nonce: 0,
+                scheduled: false,
+            },
+            memo: String::new(),
+            max_fee: Tinybar(0),
+            hash: Digest384::default(),
+            valid_duration_seconds: 120,
+            body: Body::Delete {
+                account,
+                transfer_to: EntityId(1002),
+            },
+        };
+
+        let missing = c.apply_hapi(delete(EntityId(9_999), 1), Timestamp::from_secs(1));
+        assert_eq!(missing.status, Status::InvalidAccountId);
+
+        let first = c.apply_hapi(delete(EntityId(1003), 2), Timestamp::from_secs(2));
+        assert_eq!(first.status, Status::Success);
+        let again = c.apply_hapi(delete(EntityId(1003), 3), Timestamp::from_secs(3));
+        assert_eq!(again.status, Status::AccountDeleted);
+    }
+
+    /// Crediting the same unknown alias twice used to allocate two accounts and leave the first
+    /// one's balance unreachable, because the second overwrote the alias index.
+    #[test]
+    fn one_alias_credited_twice_in_a_list_is_a_repeat() {
+        let mut c = chain();
+        let alias = Address::repeat_byte(0x42);
+        let record = c.apply_hapi(
+            Transaction {
+                id: TxId {
+                    payer: EntityId(1002),
+                    valid_start: Timestamp::from_secs(1),
+                    nonce: 0,
+                    scheduled: false,
+                },
+                memo: String::new(),
+                max_fee: Tinybar(0),
+                hash: Digest384::default(),
+                valid_duration_seconds: 120,
+                body: Body::Transfer {
+                    amounts: vec![
+                        (AccountRef::Id(EntityId(1002)), -200),
+                        (AccountRef::Alias(alias), 100),
+                        (AccountRef::Alias(alias), 100),
+                    ],
+                },
+            },
+            Timestamp::from_secs(1),
+        );
+
+        assert_eq!(record.status, Status::AccountRepeatedInAccountAmounts);
+        assert!(c.account_by_evm(&alias).is_none());
     }
 
     #[test]
