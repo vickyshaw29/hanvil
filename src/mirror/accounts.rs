@@ -6,10 +6,10 @@ use axum::extract::{Path, State};
 use axum::response::Json;
 use serde_json::{Value, json};
 
-use super::shapes::{self, AUTO_RENEW_PERIOD, Reference, timestamp};
+use super::shapes::{self, Reference, timestamp};
 use super::{Answer, Error, Order, Params, page, transactions};
 use crate::serve::Shared;
-use crate::state::{Account, Chain, Timestamp};
+use crate::state::{AUTO_RENEW_PERIOD_SECS, Account, Chain, Timestamp};
 
 /// `GET /api/v1/accounts/{idOrAliasOrEvmAddress}` — `openapi.yml:2148`
 /// AccountBalanceTransactions: an AccountInfo with the account's transactions attached.
@@ -60,7 +60,7 @@ pub(super) fn info(chain: &Chain, account: &Account) -> Value {
         // The mirror's `alias` is the base32 key alias an auto-created account carries. Hanvil
         // mints EVM-address aliases only, which `evm_address` already reports.
         "alias": Value::Null,
-        "auto_renew_period": AUTO_RENEW_PERIOD,
+        "auto_renew_period": AUTO_RENEW_PERIOD_SECS,
         "balance": {
             "timestamp": timestamp(chain.latest_block().consensus_timestamp).as_str(),
             "balance": account.balance.0,
@@ -73,7 +73,7 @@ pub(super) fn info(chain: &Chain, account: &Account) -> Value {
         "ethereum_nonce": account.nonce,
         "evm_address": shapes::hex(account.evm_address().as_slice()),
         "expiry_timestamp": timestamp(Timestamp {
-            secs: account.created_at.secs + AUTO_RENEW_PERIOD,
+            secs: account.created_at.secs + AUTO_RENEW_PERIOD_SECS,
             nanos: account.created_at.nanos,
         }).as_str(),
         "key": shapes::key(account.key.as_ref()),

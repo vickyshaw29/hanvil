@@ -2,16 +2,19 @@
 
 use super::proto;
 use super::wire::{to_account_id, to_contract_id, to_proto_timestamp, to_topic_id};
-use crate::state::{Account, Chain, EntityId, Record, Status, Timestamp, Topic, hapi};
+use crate::state::{
+    AUTO_RENEW_PERIOD_SECS, Account, CENT_EQUIVALENT, Chain, EXCHANGE_RATE_VALID_SECS, EntityId,
+    HBAR_EQUIVALENT, Record, Status, Timestamp, Topic, hapi,
+};
 
-/// 1 ℏ = 12 ¢, the same fixed rate `/api/v1/network/exchangerate` reports
-/// (`src/mirror/network.rs`). Hanvil has no price feed.
+/// The same fixed rate `/api/v1/network/exchangerate` reports.
 fn exchange_rate(chain: &Chain) -> proto::ExchangeRateSet {
+    let expires = chain.latest_block().consensus_timestamp.secs + EXCHANGE_RATE_VALID_SECS;
     let rate = proto::ExchangeRate {
-        hbar_equiv: 30_000,
-        cent_equiv: 360_000,
+        hbar_equiv: HBAR_EQUIVALENT,
+        cent_equiv: CENT_EQUIVALENT,
         expiration_time: Some(proto::TimestampSeconds {
-            seconds: chain.latest_block().consensus_timestamp.secs as i64 + 86_400,
+            seconds: expires as i64,
         }),
     };
     proto::ExchangeRateSet {
@@ -76,12 +79,6 @@ fn created_contract(chain: &Chain, record: &Record) -> Option<proto::ContractId>
     let created = chain.transaction(&hash)?.receipt.contract_address?;
     chain.contract_id_by_evm(&created).map(to_contract_id)
 }
-
-/// Seconds an entity lives before it must be renewed. Hedera's default, and what the mirror
-/// reports for an entity that set none (`src/mirror/shapes.rs`). Hanvil never expires anything;
-/// the field exists so a client that reads it sees a time in the future, not the creation
-/// instant.
-const AUTO_RENEW_PERIOD_SECS: u64 = 7_776_000;
 
 /// `CryptoGetInfoResponse.AccountInfo` (`crypto_get_info.proto`).
 pub fn account_info(account: &Account) -> proto::crypto_get_info_response::AccountInfo {

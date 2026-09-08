@@ -90,6 +90,17 @@ pub const BLOCK_GAS_LIMIT: u64 = 30_000_000;
 pub const HAPI_FEE: Tinybar = Tinybar(10_000);
 /// Total supply, 50 billion HBAR, minted to the treasury.
 const TOTAL_SUPPLY: Tinybar = Tinybar::from_hbar(50_000_000_000);
+/// Seconds an entity lives before it must be renewed. Hedera's default, and what the mirror and
+/// HAPI both report for an entity that set none. Hanvil never expires anything; the field exists
+/// so a client that reads it sees a time in the future rather than the creation instant.
+pub const AUTO_RENEW_PERIOD_SECS: u64 = 7_776_000;
+/// The fixed rate `/api/v1/network/exchangerate` and every HAPI receipt report: 30,000 ℏ per
+/// 360,000 ¢, or 1 ℏ = 12 ¢. Hanvil has no price feed and never expires the rate.
+pub const HBAR_EQUIVALENT: i32 = 30_000;
+/// Cent side of [`HBAR_EQUIVALENT`].
+pub const CENT_EQUIVALENT: i32 = 360_000;
+/// How far ahead of the head block the reported rate claims to be valid.
+pub const EXCHANGE_RATE_VALID_SECS: u64 = 86_400;
 
 /// Metadata for a contract entity; code and storage live in the EVM database. Read by the mirror
 /// REST (`/contracts/{id}`).

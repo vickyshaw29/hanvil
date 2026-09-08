@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use super::shapes::{self, Reference, timestamp, timestamp_range};
 use super::{Answer, Error, Order, Params, page, submitted, transactions};
 use crate::serve::Shared;
-use crate::state::{Chain, EntityId, StoredLog, TxRecord};
+use crate::state::{AUTO_RENEW_PERIOD_SECS, Chain, EntityId, StoredLog, TxRecord};
 
 /// `GET /api/v1/contracts/{contractIdOrAddress}` — `openapi.yml:1586` ContractResponse.
 pub async fn get(State(chain): State<Shared>, Path(id): Path<String>) -> Answer {
@@ -23,7 +23,7 @@ pub async fn get(State(chain): State<Shared>, Path(id): Path<String>) -> Answer 
     Ok(Json(json!({
         "admin_key": Value::Null,
         "auto_renew_account": Value::Null,
-        "auto_renew_period": shapes::AUTO_RENEW_PERIOD,
+        "auto_renew_period": AUTO_RENEW_PERIOD_SECS,
         "contract_id": entity.to_string(),
         "created_timestamp": timestamp(created).as_str(),
         "deleted": false,

@@ -8,10 +8,6 @@ use serde_json::{Value, json};
 use super::Error;
 use crate::state::{EntityId, Key, Timestamp};
 
-/// Seconds an entity is valid for before it must be renewed. Hedera's default, and what the
-/// mirror reports for accounts that never set one.
-pub const AUTO_RENEW_PERIOD: u64 = 7_776_000;
-
 /// `openapi.yml:3774` Timestamp: `"1586567700.453054000"`.
 pub fn timestamp(at: Timestamp) -> Value {
     json!(at.to_string())

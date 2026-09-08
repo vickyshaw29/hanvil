@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use super::shapes::{self, timestamp, timestamp_range};
 use super::{Answer, Params};
 use crate::serve::Shared;
-use crate::state::NODE;
+use crate::state::{CENT_EQUIVALENT, EXCHANGE_RATE_VALID_SECS, HBAR_EQUIVALENT, NODE};
 
 /// `GET /api/v1/network/nodes` — `openapi.yml:2982` NetworkNode. Hanvil is one node, 0.0.3, the
 /// account every HAPI transaction must name.
@@ -43,17 +43,17 @@ pub async fn nodes(State(chain): State<Shared>) -> Answer {
     })))
 }
 
-/// `GET /api/v1/network/exchangerate` — `openapi.yml:2865` ExchangeRate. Fixed: Hanvil has no
-/// price feed and never expires the rate.
+/// `GET /api/v1/network/exchangerate` — `openapi.yml:2865` ExchangeRate.
+///
+/// VERIFY: 1 ℏ = 12 ¢ is Hedera's long-standing default rate; the value hiero-local-node serves
+/// was not found in its sources (docs/research.md §6, 2026-09-07).
 pub async fn exchange_rate(State(chain): State<Shared>) -> Answer {
     let chain = chain.read();
     let now = chain.latest_block().consensus_timestamp;
-    // VERIFY: 1 ℏ = 12 ¢ is Hedera's long-standing default rate; the value hiero-local-node
-    // serves was not found in its sources (docs/research.md §6, 2026-09-07).
     let rate = json!({
-        "cent_equivalent": 360_000,
-        "expiration_time": now.secs + 86_400,
-        "hbar_equivalent": 30_000,
+        "cent_equivalent": CENT_EQUIVALENT,
+        "expiration_time": now.secs + EXCHANGE_RATE_VALID_SECS,
+        "hbar_equivalent": HBAR_EQUIVALENT,
     });
     Ok(Json(json!({
         "current_rate": rate,
