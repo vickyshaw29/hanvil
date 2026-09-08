@@ -32,7 +32,7 @@ pub struct Args {
     #[arg(long, default_value_t = 5551, env = "HANVIL_MIRROR_PORT")]
     pub mirror_port: u16,
 
-    /// HAPI gRPC port. Not served yet.
+    /// HAPI gRPC port. 0 picks a free port.
     #[arg(long, default_value_t = 50211, env = "HANVIL_GRPC_PORT")]
     pub grpc_port: u16,
 
@@ -53,6 +53,11 @@ pub struct Args {
     #[arg(long, default_value_t = 71, env = "HANVIL_GAS_PRICE")]
     pub gas_price: u64,
 
+    /// Accept HAPI transactions without checking their signatures. Useful when replaying a body
+    /// signed for another network; every other check still runs.
+    #[arg(long)]
+    pub no_sig_verify: bool,
+
     /// Print nothing.
     #[arg(long)]
     pub silent: bool,
@@ -72,17 +77,24 @@ impl Args {
 }
 
 /// Boot banner: endpoints, accounts, and how long boot took.
-pub fn banner(args: &Args, chain: &Chain, rpc: SocketAddr, mirror: SocketAddr, elapsed: Duration) {
+pub fn banner(
+    args: &Args,
+    chain: &Chain,
+    rpc: SocketAddr,
+    mirror: SocketAddr,
+    grpc: SocketAddr,
+    elapsed: Duration,
+) {
     println!(
         "hanvil {} — local Hedera network",
         env!("CARGO_PKG_VERSION")
     );
     println!("JSON-RPC   http://{rpc}   chain id {}", chain.chain_id());
     println!("Mirror     http://{mirror}/api/v1");
-    println!(
-        "gRPC       {}:{}          node 0.0.3 (not yet served)",
-        args.host, args.grpc_port
-    );
+    println!("HAPI gRPC  {grpc}          node 0.0.3");
+    if args.no_sig_verify {
+        println!("           signature verification off (--no-sig-verify)");
+    }
     println!();
 
     for (title, group) in chain.accounts_by_group() {

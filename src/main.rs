@@ -31,6 +31,7 @@ async fn main() -> anyhow::Result<()> {
         state::Chain::genesis(&args.genesis(clock.now())).context("building genesis state")?;
     let shared: serve::Shared = Arc::new(RwLock::new(chain));
 
+    let grpc_clock = Arc::clone(&clock);
     let rpc = rpc::serve(
         rpc::App {
             chain: Arc::clone(&shared),
@@ -44,6 +45,17 @@ async fn main() -> anyhow::Result<()> {
     let mirror = mirror::serve(Arc::clone(&shared), &args.host, args.mirror_port)
         .await
         .context("starting mirror REST listener")?;
+    let grpc = hapi::serve(
+        hapi::Node {
+            chain: Arc::clone(&shared),
+            clock: Arc::clone(&grpc_clock),
+            verify_signatures: !args.no_sig_verify,
+        },
+        &args.host,
+        args.grpc_port,
+    )
+    .await
+    .context("starting HAPI gRPC listener")?;
 
     if !args.silent {
         cli::banner(
@@ -51,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
             &shared.read(),
             rpc.local_addr,
             mirror.local_addr,
+            grpc.local_addr,
             started.elapsed(),
         );
     }
@@ -61,6 +74,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("shutting down");
     rpc.task.abort();
     mirror.task.abort();
+    grpc.task.abort();
     Ok(())
 }
 
