@@ -5,6 +5,8 @@
 //! to 0.0.98, a consensus timestamp that identifies the record, and a transaction id built from
 //! the payer and that timestamp.
 
+use std::collections::HashSet;
+
 use axum::extract::{Path, State};
 use axum::response::Json;
 use serde_json::{Value, json};
@@ -13,7 +15,7 @@ use super::shapes::{self, timestamp};
 use super::{Answer, Error, Order, Params, page, submitted};
 use crate::evm::units::Tinybar;
 use crate::serve::Shared;
-use crate::state::{Chain, EntityId, NODE, TxRecord};
+use crate::state::{Chain, EntityId, NODE, Record, Timestamp, TxRecord};
 
 /// Seconds a transaction stays valid for after its start. The SDK's default, and what the mirror
 /// reports for a transaction that did not set one.
@@ -32,25 +34,20 @@ pub async fn list(State(chain): State<Shared>, params: Params) -> Answer {
         Some(_) => return Err(Error::invalid_parameter("result")),
     };
 
-    if let Some(kind) = kind.as_deref() {
-        if !TRANSACTION_TYPES.contains(&kind) {
-            return Err(Error::invalid_parameter("transactiontype"));
-        }
-        // Every record Hanvil holds today is an ETHEREUMTRANSACTION. A real type it never
-        // records has no matches, which is an empty page rather than an error.
-        if kind != NAME {
-            return Ok(Json(
-                json!({ "transactions": [], "links": shapes::links() }),
-            ));
-        }
+    if kind
+        .as_deref()
+        .is_some_and(|kind| !TRANSACTION_TYPES.contains(&kind))
+    {
+        return Err(Error::invalid_parameter("transactiontype"));
     }
 
     let chain = chain.read();
-    let matched: Vec<Value> = chain
-        .transactions()
-        .filter(|tx| result.is_none_or(|want| want == tx.receipt.success))
-        .filter(|tx| account.is_none_or(|id| involves(&chain, tx, id)))
-        .map(|tx| record(&chain, tx))
+    let matched = all_records(&chain)
+        .into_iter()
+        .filter(|entry| kind.as_deref().is_none_or(|kind| kind == entry.name))
+        .filter(|entry| result.is_none_or(|want| want == entry.succeeded))
+        .filter(|entry| account.is_none_or(|id| entry.involves(id)))
+        .map(|entry| entry.body)
         .collect();
     Ok(Json(json!({
         "transactions": page(matched, order, limit),
@@ -58,16 +55,113 @@ pub async fn list(State(chain): State<Shared>, params: Params) -> Answer {
     })))
 }
 
+/// One rendered transaction with the fields the list filters on, so an EVM record and a HAPI
+/// record are filtered the same way.
+struct Entry {
+    at: Timestamp,
+    name: &'static str,
+    succeeded: bool,
+    body: Value,
+}
+
+impl Entry {
+    fn involves(&self, id: EntityId) -> bool {
+        self.body["transfers"].as_array().is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| entry["account"] == json!(id.to_string()))
+        })
+    }
+}
+
+/// Every transaction the chain holds, oldest first: the EVM ones, and the HAPI ones. An EVM
+/// transaction submitted through `callEthereum` has both a `TxRecord` and a HAPI record; the HAPI
+/// record wins, because it carries the transaction id the client will ask for.
+fn all_records(chain: &Chain) -> Vec<Entry> {
+    let wrapped: HashSet<&[u8]> = chain
+        .hapi_records()
+        .map(|record| record.ethereum_hash.as_slice())
+        .filter(|hash| !hash.is_empty())
+        .collect();
+
+    let mut entries: Vec<Entry> = chain
+        .transactions()
+        .filter(|tx| !wrapped.contains(tx.hash.as_slice()))
+        .map(|tx| Entry {
+            at: tx.consensus_timestamp,
+            name: NAME,
+            succeeded: tx.receipt.success,
+            body: record(chain, tx),
+        })
+        .chain(chain.hapi_records().map(|found| Entry {
+            at: found.consensus_timestamp,
+            name: found.kind.name(),
+            succeeded: found.status == crate::state::Status::Success,
+            body: hapi_record(found),
+        }))
+        .collect();
+    entries.sort_by_key(|entry| entry.at);
+    entries
+}
+
+/// `openapi.yml:4236` Transaction, as a HAPI body fills it in.
+fn hapi_record(found: &Record) -> Value {
+    json!({
+        "bytes": Value::Null,
+        "charged_tx_fee": found.charged_fee.0,
+        "consensus_timestamp": timestamp(found.consensus_timestamp).as_str(),
+        "entity_id": found.entity().map_or(Value::Null, |id| json!(id.to_string())),
+        "max_fee": found.max_fee.0.to_string(),
+        "memo_base64": shapes::base64(found.memo.as_bytes()),
+        "name": found.kind.name(),
+        "nft_transfers": [],
+        "node": NODE.to_string(),
+        "nonce": found.id.nonce,
+        "parent_consensus_timestamp": Value::Null,
+        "result": found.status.name(),
+        "scheduled": found.id.scheduled,
+        "staking_reward_transfers": [],
+        "token_transfers": [],
+        "transaction_hash": shapes::base64(found.hash.as_bytes()),
+        "transaction_id": found.id.to_string(),
+        "transfers": Value::Array(
+            found
+                .transfers
+                .iter()
+                .map(|transfer| {
+                    json!({
+                        "account": transfer.account.to_string(),
+                        "amount": transfer.amount,
+                        "is_approval": false,
+                    })
+                })
+                .collect(),
+        ),
+        "valid_duration_seconds": found.valid_duration_seconds.to_string(),
+        "valid_start_timestamp": timestamp(found.id.valid_start).as_str(),
+    })
+}
+
 /// `GET /api/v1/transactions/{transactionId}`. The id is `0.0.x-sss-nnn`; the SDK's `@` form is a
 /// 400, which is what PR #39's reader stops polling on.
 pub async fn by_id(State(chain): State<Shared>, Path(id): Path<String>) -> Answer {
     let (payer, valid_start) = shapes::parse_transaction_id(&id)?;
     let chain = chain.read();
-    let found: Vec<Value> = chain
-        .transactions()
-        .filter(|tx| tx.consensus_timestamp == valid_start && payer_of(&chain, tx) == Some(payer))
-        .map(|tx| record(&chain, tx))
+    let mut found: Vec<Value> = chain
+        .hapi_records()
+        .filter(|record| record.id.payer == payer && record.id.valid_start == valid_start)
+        .map(hapi_record)
         .collect();
+    // An EVM transaction has no client-supplied valid start, so its id is built from the payer
+    // and the consensus timestamp (`docs/code-plan.md` §5).
+    found.extend(
+        chain
+            .transactions()
+            .filter(|tx| {
+                tx.consensus_timestamp == valid_start && payer_of(&chain, tx) == Some(payer)
+            })
+            .map(|tx| record(&chain, tx)),
+    );
     if found.is_empty() {
         return Err(Error::NotFound {
             message: "Transaction not found".to_string(),
@@ -77,7 +171,7 @@ pub async fn by_id(State(chain): State<Shared>, Path(id): Path<String>) -> Answe
     Ok(Json(json!({ "transactions": found })))
 }
 
-/// The only transaction type Hanvil records today. HAPI bodies arrive on Day 3.
+/// The type every EVM transaction is recorded under.
 pub const NAME: &str = "ETHEREUMTRANSACTION";
 
 /// Every value `?transactiontype=` accepts, copied from `openapi.yml:4063` TransactionTypes. A

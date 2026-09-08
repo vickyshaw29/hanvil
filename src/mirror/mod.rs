@@ -9,6 +9,7 @@ mod contracts;
 mod network;
 mod shapes;
 mod submitted;
+mod topics;
 mod transactions;
 
 use std::collections::HashMap;
@@ -176,6 +177,12 @@ pub async fn serve(chain: Shared, host: &str, port: u16) -> std::io::Result<Boun
         .route("/api/v1/contracts/{id}", get(contracts::get))
         .route("/api/v1/contracts/{id}/results", get(contracts::results))
         .route("/api/v1/contracts/{id}/results/logs", get(contracts::logs))
+        .route("/api/v1/topics/{id}", get(topics::get))
+        .route("/api/v1/topics/{id}/messages", get(topics::messages))
+        .route(
+            "/api/v1/topics/{id}/messages/{sequence_number}",
+            get(topics::message),
+        )
         .route("/api/v1/blocks", get(blocks::list))
         .route("/api/v1/blocks/{id}", get(blocks::by_id))
         .route("/api/v1/network/nodes", get(network::nodes))
