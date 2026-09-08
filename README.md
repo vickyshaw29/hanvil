@@ -16,8 +16,8 @@ On an M-series Mac, 2026-09-08, release build, median of five runs:
 | | hanvil | how it was measured |
 | --- | --- | --- |
 | Boot to listeners bound | 1 ms | the binary prints `Started in 1 ms` |
-| Resident memory | 4.2 MB | `ps -o rss= -p $(pgrep -x hanvil)` |
-| Binary | 7.1 MB | `ls -l target/release/hanvil` |
+| Resident memory | 4.1 MB | `ps -o rss= -p $(pgrep -x hanvil)` |
+| Binary | 6.8 MB | `ls -l target/release/hanvil` |
 | Accounts pre-funded | 30, 10,000 ℏ each | the boot banner |
 
 CI asserts the median boot stays under 100 ms on ubuntu and macos runners
