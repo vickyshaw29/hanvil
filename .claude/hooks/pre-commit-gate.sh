@@ -33,10 +33,41 @@ if [ -n "$MSG" ]; then
   [ ${#MSG} -le 72 ] || fail "subject is ${#MSG} chars; keep it ≤ 72"
 fi
 
-# 3. No unwrap/expect added under src/ (CLAUDE.md §5). Escape hatch: trailing comment `// gate: allow`.
-ADDED=$(git diff --cached -U0 -- 'src/**/*.rs' 'src/*.rs' 2>/dev/null | grep -E '^\+' | grep -vE '^\+\+\+' || true)
-VIOL=$(printf '%s\n' "$ADDED" | grep -E '\.(unwrap|expect)\(' | grep -v 'gate: allow' || true)
-[ -n "$VIOL" ] && fail "unwrap()/expect() added under src/ (allowed only in tests). Lines:
+# 3. No unwrap/expect added under src/ outside `#[cfg(test)]` (CLAUDE.md §5). Escape hatch:
+# trailing comment `// gate: allow`.
+VIOL=$(git diff --cached -U0 -- 'src/**/*.rs' 'src/*.rs' 2>/dev/null | python3 -c '
+import re, subprocess, sys
+
+# Line number of a file first #[cfg(test)], or None. Test modules come last in this repo, so
+# every line at or after that one is test code and may use unwrap/expect.
+def first_test_line(path):
+    try:
+        body = subprocess.run(["git", "show", ":" + path], capture_output=True, text=True,
+                              check=True).stdout
+    except subprocess.CalledProcessError:
+        return None
+    for n, line in enumerate(body.splitlines(), 1):
+        if line.strip().startswith("#[cfg(test)]"):
+            return n
+    return None
+
+path, cutoff, line_no = None, None, 0
+for line in sys.stdin.read().splitlines():
+    if line.startswith("+++ b/"):
+        path, cutoff = line[6:], first_test_line(line[6:])
+        continue
+    if line.startswith("@@"):
+        m = re.search(r"\+(\d+)", line)
+        line_no = int(m.group(1)) if m else 0
+        continue
+    if not line.startswith("+") or line.startswith("+++"):
+        continue
+    if re.search(r"\.(unwrap|expect)\(", line) and "gate: allow" not in line:
+        if cutoff is None or line_no < cutoff:
+            print(path + ":" + str(line_no) + ": " + line[1:].strip())
+    line_no += 1
+' || true)
+[ -n "$VIOL" ] && fail "unwrap()/expect() added under src/ outside #[cfg(test)]. Lines:
 $VIOL"
 
 # 4. Rust gates when a Cargo project exists.
