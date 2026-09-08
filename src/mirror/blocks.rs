@@ -12,14 +12,18 @@ use serde_json::{Value, json};
 use super::shapes::{self, timestamp_range};
 use super::{Answer, Error, Order, Params, page};
 use crate::serve::Shared;
-use crate::state::{Block, Chain};
+use crate::state::{Block, Chain, TxBody};
 
 /// `GET /api/v1/blocks`.
 pub async fn list(State(chain): State<Shared>, params: Params) -> Answer {
     let limit = params.limit()?;
     let order = params.order(Order::Desc)?;
     let chain = chain.read();
-    let all: Vec<Value> = chain.blocks().iter().map(|b| block(&chain, b)).collect();
+    let all: Vec<Value> = chain
+        .blocks()
+        .iter()
+        .map(|b| block_body(&chain, b))
+        .collect();
     Ok(Json(json!({
         "blocks": page(all, order, limit),
         "links": shapes::links(),
@@ -44,11 +48,7 @@ pub async fn by_id(State(chain): State<Shared>, Path(id): Path<String>) -> Answe
         }
     };
     let block = found.ok_or_else(Error::not_found)?;
-    Ok(Json(json!(block_body(&chain, block))))
-}
-
-fn block(chain: &Chain, block: &Block) -> Value {
-    block_body(chain, block)
+    Ok(Json(block_body(&chain, block)))
 }
 
 /// `openapi.yml:3336` Block.
@@ -81,8 +81,8 @@ fn size(chain: &Chain, block: &Block) -> usize {
         .iter()
         .filter_map(|hash| chain.transaction(hash))
         .map(|tx| match &tx.body {
-            crate::state::TxBody::Signed(raw) => raw.len(),
-            crate::state::TxBody::Unsigned(unsigned) => unsigned.input.len(),
+            TxBody::Signed(raw) => raw.len(),
+            TxBody::Unsigned(unsigned) => unsigned.input.len(),
         })
         .sum()
 }

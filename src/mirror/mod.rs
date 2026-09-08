@@ -144,7 +144,6 @@ impl Params {
         let Some(text) = self.get(name) else {
             return Ok(None);
         };
-        // The mirror also takes gt:/gte:/lt:/lte: here; Hanvil takes equality and says so.
         let value = text.strip_prefix("eq:").unwrap_or(text);
         if value.contains(':') {
             return Err(Error::invalid_parameter(name));

@@ -357,7 +357,6 @@ pub fn to_transaction_id(id: TxId) -> proto::TransactionId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evm::units::Tinybar;
     use crate::keys;
     use crate::state::{FIRST_USER_ID, Genesis};
 

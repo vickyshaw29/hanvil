@@ -15,7 +15,7 @@ pub async fn get(State(chain): State<Shared>, Path(id): Path<String>) -> Answer 
     let id = shapes::parse_entity_id(&id).map_err(|()| Error::invalid_parameter("topicId"))?;
     let chain = chain.read();
     let topic = chain.topic(id).ok_or_else(|| not_found(id))?;
-    Ok(Json(shape(topic)))
+    Ok(Json(topic_body(topic)))
 }
 
 /// `GET /api/v1/topics/{topicId}/messages` — `openapi.yml:1140`. `sequencenumber` selects one
@@ -42,7 +42,7 @@ pub async fn messages(
         .messages
         .iter()
         .filter(|message| wanted.is_none_or(|n| n == message.sequence_number))
-        .map(|message| message_shape(id, message))
+        .map(|message| message_body(id, message))
         .collect();
     Ok(Json(json!({
         "messages": page(matched, order, limit),
@@ -66,7 +66,7 @@ pub async fn message(
         .iter()
         .find(|message| message.sequence_number == sequence_number)
         .ok_or_else(Error::not_found)?;
-    Ok(Json(message_shape(id, found)))
+    Ok(Json(message_body(id, found)))
 }
 
 /// `openapi.yml:4543` TopicNotFound: the message names the topic number, not the whole id.
@@ -79,7 +79,7 @@ fn not_found(id: EntityId) -> Error {
 
 /// `openapi.yml:4138` Topic. Every required field is present; the custom-fee fields are the empty
 /// shapes a topic without custom fees carries.
-fn shape(topic: &Topic) -> Value {
+fn topic_body(topic: &Topic) -> Value {
     json!({
         "admin_key": shapes::key(topic.admin_key.as_ref()),
         "auto_renew_account": topic
@@ -99,7 +99,7 @@ fn shape(topic: &Topic) -> Value {
 }
 
 /// `openapi.yml:4188` TopicMessage. `message` and `running_hash` are base64 (`format: byte`).
-fn message_shape(topic: EntityId, message: &TopicMessage) -> Value {
+fn message_body(topic: EntityId, message: &TopicMessage) -> Value {
     json!({
         // Hanvil stores each submitted chunk as its own message and keeps no chunk metadata
         // (README, what is not emulated), so this optional field is null rather than invented.
