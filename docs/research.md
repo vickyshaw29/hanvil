@@ -404,3 +404,61 @@ alloy-primitives 1.7.2, alloy-consensus 2.4.1, alloy-rlp 0.3.16, k256 0.14.0, cl
   protobuf.
 - Boot re-measured 2026-09-08 on the release build, five runs: `Started in 1 ms` (one 2 ms),
   RSS 4.1–4.2 MB, binary 7.1 MB. The binary grew from 5.6 MB with the four gRPC services.
+
+## 18. Day 4 findings (2026-09-08): the harness runs on Hanvil
+
+- **`hedera-harness run` completes against Hanvil with no credentials.** Recipe:
+  `chainValidation: { enabled: true, network: local }`, nothing else — no `operator`, no
+  `HEDERA_OPERATOR_ID`, no `HEDERA_OPERATOR_KEY` in the environment. Verdict `Run PASSED`,
+  five runs, 3.6–4.3 s wall clock (median 4.03 s). The run artifacts carry
+  `{"type":"chain_signer_provisioned","network":"local","reused":false}` and
+  `{"type":"chain_signer_swept","success":true}`, and the mirror shows both signer accounts
+  created and deleted with balance 0. Four HAPI records survive the run:
+  `CRYPTOCREATEACCOUNT`/`CRYPTODELETE` pairs under `0.0.1002-…` transaction ids.
+- What that run does **not** prove: the generator is a fixed shell command, not an agent, and
+  `validator` is off, so no EVALUATE/browser tier ran. It proves the run lifecycle including
+  CHAIN provisioning, use and sweep, which is the tier PR 1 changes.
+- Two fixture requirements the loader enforces and the docs do not spell out: `baseline.commands`
+  must contain a command literally named `install`, and `validators/*.json` must carry
+  `{"commands": []}` / `{"jsonAssertions": []}` rather than `{}` — `{}` fails at ASSERT with
+  `config.commands is not iterable`, after the chain signer has already been provisioned.
+
+### Solo, measured (2026-09-08)
+
+`hiero-local-node` is deprecated: announced March 2026, complete **September 2026** — "No further
+updates, bug fixes, or support" (hedera.com/blog/hiero-local-node-deprecation-6-month-transition-to-solo).
+Its replacement is `hiero-ledger/solo` 0.88.0, 43 stars.
+
+| | Solo 0.88.0 | Hanvil 0.1.0 |
+| --- | --- | --- |
+| Install | `npm i -g @hiero-ledger/solo` — 886 s, 362 MB, 223 deps | `cargo build --release` 43 s, one 7.1 MB binary |
+| Runtime dependencies | Docker, kind, helm, kubectl, crane, Node ≥ 22 | none |
+| A single-node network | 16 pods, 48 container images | 1 process |
+| Stated minimum | ≥ 12 GB RAM, ≥ 6 CPU cores | — |
+| Ports | 37546 / 38081 / 35211 | 7546 / 5551 / 50211, as hiero-local-node |
+
+Solo self-provisions helm, kind and crane into `~/.solo/bin`, which is good DX.
+
+**No Solo boot time was obtained, and none may be quoted.** `solo one-shot single deploy` failed
+after 732 s with `SOLO-3035 Failed to create Kubernetes pod`. Two confounds, both in the log:
+Solo's own preflight reported `detected: 7.8GB memory, 10 CPU(s) / recommended: >=12GB memory`
+(Docker Desktop's default on this 16 GB machine is below Solo's minimum), and three `ghcr.io`
+pulls failed with `i/o timeout` and `PROTOCOL_ERROR`. The consensus node never started
+(`network-node1-0: ImageInspectError`), so the 2.14 GB / 178 % CPU the partial cluster held is a
+floor, not a measurement. A clean number needs Docker raised to ≥ 12 GB — on a 16 GB host that
+leaves 4 GB for the OS.
+
+- **Prior art search, 2026-09-08.** crates.io has 27 `hedera`/`hiero` crates — SDKs, DID, x402,
+  stream parsers — and no local node. GitHub returns zero repositories for `anvil hedera`,
+  `hedera emulator`, `hedera devnet simulator`, `hedera in-memory node`, `hedera mock node grpc`;
+  `hedera local node` returns only forks of the official repo. `evm_snapshot`/`evm_revert`/`anvil_*`
+  appear nowhere in `hiero-json-rpc-relay/docs/rpc-api.md`, and "snapshot" appears nowhere in
+  `hiero-local-node`.
+- **The harness PR field.** Everything through #37 (Sep 3) is the maintainer. Sep 5–6 brought five
+  outside contributors: #38 persistent test wallet (closed), #39 mirror node reader, #40
+  contract-security validator, #42 and #16 doctor checks on the testnet operator, #43 Tier 2.5
+  mirror validator. All are validators or doctor checks on the testnet path; none touches network
+  selection or local execution. **#42 and #16 edit `src/doctor.ts`'s chain checks and #16 also
+  edits `src/validation/chainSigner.ts` and `test/doctor.test.mjs` — the same files as PR 1.**
+  They deepen the testnet operator check; PR 1 skips it on local. Composable, textually
+  conflicting; the PR description should say so.
