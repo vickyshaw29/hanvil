@@ -43,10 +43,11 @@ hanvil/
 │   │   └── shapes.rs         # exact field sets from openapi.yml (§8)
 │   ├── hapi/                 # gRPC (tonic)
 │   │   ├── mod.rs            # server, service registration
-│   │   ├── wire.rs           # Transaction -> SignedTransaction -> TransactionBody; sig verify
+│   │   ├── wire.rs           # Transaction -> SignedTransaction -> TransactionBody; prechecks
+│   │   ├── render.rs         # chain types back into receipts, records, infos
 │   │   ├── crypto.rs         # CryptoService
 │   │   ├── consensus.rs      # ConsensusService
-│   │   ├── contract.rs       # SmartContractService (contractCallLocal only in v0)
+│   │   ├── contract.rs       # SmartContractService (callEthereum + contractCallLocal)
 │   │   ├── network.rs        # getVersionInfo
 │   │   └── queries.rs        # QueryHeader/ResponseHeader, COST_ANSWER handling
 │   └── keys/

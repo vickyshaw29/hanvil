@@ -368,3 +368,39 @@ alloy-primitives 1.7.2, alloy-consensus 2.4.1, alloy-rlp 0.3.16, k256 0.14.0, cl
 - **PR #39's reader** (`research/harness-prs/pr-39.diff`, `src/validation/mirrorNode.ts`) treats
   404 as "not yet" and any other 4xx as a caller error it stops polling on. That is why the
   transaction-id form is a 400 and not an empty list.
+
+## 17. Day 3 findings (2026-09-08)
+
+- **Running hash v3 is documented in the protobuf, not only in the node's source.**
+  `transaction_receipt.proto:93-110` lists the twelve inputs in order — previous hash (48), version
+  (8), payer shard/realm/num (8 each), topic shard/realm/num (8 each), consensus seconds (8) and
+  nanos (4), sequence number (8), then SHA-384 of the message (48) — all big-endian. The
+  consensus-node clone under `research/` holds only `hapi/`, so this comment is the whole source;
+  Hanvil's `state/hapi.rs::running_hash_v3` follows it and a unit test pins the byte layout.
+- **`AccountInfo.alias` is a serialized protobuf `Key`, and the SDK decodes it as one**
+  (`hiero-sdk-js/src/account/AccountInfo.js:224-231`). Returning the 20-byte EVM address there
+  makes `AccountInfoQuery` throw `invalid wire type 6 at offset 1`. Hanvil leaves the field empty
+  and puts the address in `contractAccountId`, which is the same call the mirror already makes
+  for its `alias` (§16).
+- **`TopicMessageSubmitTransaction` always sets `chunkInfo`**, even for a one-chunk message; the
+  first implementation refused a `chunkInfo` with `NOT_SUPPORTED` and no topic message ever
+  landed. The network stores each chunk as its own topic message with its own sequence number,
+  so Hanvil does the same and drops the chunk metadata (declared in the README).
+- **`TransactionReceipt` in the JS SDK carries no `topicRunningHashVersion`**
+  (`hiero-sdk-js/src/transaction/TransactionReceipt.js:32,145`), so the 3 on the wire is checked
+  in `src/hapi/wire.rs` and through the mirror's `running_hash_version`, not from JS.
+- **Precheck for an unknown payer is `PAYER_ACCOUNT_NOT_FOUND` (2), not `INVALID_ACCOUNT_ID`
+  (15).** `docs/code-plan.md` §5 said the latter; 2 is the code whose doc comment
+  (`response_code.proto:38`) describes exactly this case, and §5 rule "error codes map 1:1 to
+  upstream" wins over the plan.
+- **`tonic::service::Routes::into_axum_router()` (tonic 0.14.5 `src/service/router.rs:106`)** lets
+  gRPC share the same `axum::serve` path as the two HTTP listeners, so there is one `bind` helper
+  and no `tokio-stream` dependency. `axum`'s default `http2` feature carries h2c with prior
+  knowledge, which is what `@hiero-ledger/sdk` opens over `credentials.createInsecure()`.
+- **`build_client(false)` stays.** A tonic test client would need `tonic`'s `channel` feature,
+  which is additive across dev- and normal-dependencies and would pull a hyper client into the
+  release binary — against §3 rule 9. The gRPC integration test is `tests/js/sdk.test.mjs` with
+  the real SDK, and precheck ordering is unit-tested in `src/hapi/wire.rs` against hand-built
+  protobuf.
+- Boot re-measured 2026-09-08 on the release build, five runs: `Started in 1 ms` (one 2 ms),
+  RSS 4.1–4.2 MB, binary 7.1 MB. The binary grew from 5.6 MB with the four gRPC services.

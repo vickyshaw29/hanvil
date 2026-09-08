@@ -27,7 +27,7 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
       - run: cargo build --release
-      - name: JS end to end (viem)
+      - name: JS end to end (viem over JSON-RPC, @hiero-ledger/sdk over gRPC)
         working-directory: tests/js
         run: |
           npm ci
