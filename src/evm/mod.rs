@@ -212,11 +212,11 @@ pub fn execute(
             result: run.result,
             state: run.state,
         }),
-        Err(e) => Err(rejection(e, chain_id)),
+        Err(e) => Err(rejection(e, chain_id, block.base_fee)),
     }
 }
 
-fn rejection(error: EVMError<Infallible>, expected_chain: u64) -> Rejected {
+fn rejection(error: EVMError<Infallible>, expected_chain: u64, base_fee: u64) -> Rejected {
     match error {
         EVMError::Transaction(invalid) => match invalid {
             InvalidTransaction::NonceTooLow { tx, state } => Rejected::NonceTooLow { tx, state },
@@ -227,7 +227,7 @@ fn rejection(error: EVMError<Infallible>, expected_chain: u64) -> Rejected {
                     have: *balance,
                 }
             }
-            InvalidTransaction::GasPriceLessThanBasefee => Rejected::GasPriceTooLow { base_fee: 0 },
+            InvalidTransaction::GasPriceLessThanBasefee => Rejected::GasPriceTooLow { base_fee },
             InvalidTransaction::InvalidChainId => Rejected::ChainId {
                 tx: None,
                 expected: expected_chain,
@@ -303,6 +303,42 @@ mod tests {
         // Same legacy transaction with value 0x2540be401 would need re-signing; instead check the
         // conversion rule directly.
         assert!(Tinybar::from_weibar_exact(U256::from(10_000_000_001u64)).is_err());
+    }
+
+    /// The rejection has to name the price the network actually charges: it is the number the
+    /// caller has to raise their gas price to, and it used to be reported as zero.
+    #[test]
+    fn a_gas_price_under_the_base_fee_names_the_network_price() {
+        let block = BlockInput {
+            number: 1,
+            timestamp: 1_700_000_000,
+            gas_limit: 30_000_000,
+            base_fee: 71,
+            beneficiary: Address::ZERO,
+        };
+        let tx = TxEnv::builder()
+            .tx_type(Some(0))
+            .caller(SIGNER.parse().unwrap())
+            .nonce(0)
+            .gas_limit(21_000)
+            .gas_price(70)
+            .kind(revm::primitives::TxKind::Call(Address::ZERO))
+            .chain_id(Some(298))
+            .build()
+            .unwrap();
+
+        let mut db = CacheDB::default();
+        let Err(rejected) = execute(&mut db, 298, &block, Mode::Transaction, tx) else {
+            panic!("70 tinybar is under the 71 the block charges");
+        };
+        assert!(
+            matches!(rejected, Rejected::GasPriceTooLow { base_fee: 71 }),
+            "{rejected:?}"
+        );
+        assert_eq!(
+            rejected.to_string(),
+            "gas price below the network gas price of 71 tinybar"
+        );
     }
 
     #[test]
