@@ -141,18 +141,18 @@ node <harness>/dist/index.js run   .harness/spec.yaml
 `.github/workflows/ci.yml` runs exactly that on every push, with no secrets, and asserts the
 signer reached `network: local` rather than trusting the verdict.
 
-`network: "local"` is not in `hedera-harness` yet. It is one of two branches against
+`network: "local"` is not in `hedera-harness` yet. It is two open PRs against
 `hedera-dev/hedera-harness` `dev`:
 
-| Branch | What it does |
+| PR | What it does |
 | --- | --- |
-| `feat/chain-network-local` | `network: "local"` for the signer, `doctor` and the validator prompt |
-| `feat/chain-snapshot-per-attempt` | `evm_snapshot` before an attempt, `evm_revert` after a failed one |
+| [#47](https://github.com/hedera-dev/hedera-harness/pull/47) | `network: "local"` for the signer, `doctor` and the validator prompt |
+| [#48](https://github.com/hedera-dev/hedera-harness/pull/48) | `evm_snapshot` before an attempt, `evm_revert` after a failed one |
 
 Without the second, a repair attempt inherits whatever the previous attempt wrote on chain. On a
 recipe that mines three blocks per attempt and then fails, attempts end at block `0x3`, `0x6`,
-`0x9`; with it, `0x3`, `0x3`, `0x3`. Neither PR is open yet; CI builds the harness from the second
-branch, which contains both.
+`0x9`; with it, `0x3`, `0x3`, `0x3`. #48 stacks on #47 and contains its commits; CI builds the
+harness from that branch.
 
 ## How it is built
 
