@@ -350,3 +350,296 @@ pub fn to_transaction_id(id: TxId) -> proto::TransactionId {
         nonce: id.nonce,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::evm::units::Tinybar;
+    use crate::keys;
+    use crate::state::{FIRST_USER_ID, Genesis};
+
+    const PAYER: EntityId = EntityId(FIRST_USER_ID);
+    /// 0.0.1002's key, the first of hiero-local-node's ECDSA accounts.
+    const PAYER_KEY: &str = "0x7f109a9e3b0d8ecfba9cc23a3614433ce0fa7ddcc80f2a8f10b222179a5a80d6";
+    const NOW: Timestamp = Timestamp {
+        secs: 1_700_000_000,
+        nanos: 0,
+    };
+
+    fn chain() -> Chain {
+        Chain::genesis(&Genesis {
+            chain_id: 298,
+            accounts_per_type: 2,
+            balance: Tinybar::from_hbar(10_000),
+            gas_price: Tinybar(71),
+            now: NOW,
+        })
+        .expect("genesis")
+    }
+
+    /// A body with everything a precheck looks at set to something valid.
+    fn body(data: proto::transaction_body::Data) -> proto::TransactionBody {
+        proto::TransactionBody {
+            transaction_id: Some(to_transaction_id(TxId {
+                payer: PAYER,
+                valid_start: NOW,
+                nonce: 0,
+                scheduled: false,
+            })),
+            node_account_id: Some(to_account_id(NODE)),
+            transaction_fee: 100_000_000,
+            transaction_valid_duration: Some(proto::Duration { seconds: 120 }),
+            memo: "unit test".to_string(),
+            data: Some(data),
+            ..Default::default()
+        }
+    }
+
+    /// Wrap a body in the two envelopes and sign it with the payer's key.
+    fn signed(body: &proto::TransactionBody) -> proto::Transaction {
+        use k256::ecdsa::signature::hazmat::PrehashSigner as _;
+
+        let body_bytes = body.encode_to_vec();
+        let private = keys::decode_hex(PAYER_KEY).expect("hex");
+        let signing = k256::ecdsa::SigningKey::from_slice(&private).expect("scalar");
+        let signature: k256::ecdsa::Signature = signing
+            .sign_prehash(alloy_primitives::keccak256(&body_bytes).as_slice())
+            .expect("prehash");
+        let (public, _) = keys::ecdsa_public(&private).expect("public key");
+        let Key::EcdsaSecp256k1(prefix) = public else {
+            unreachable!()
+        };
+        let signed = proto::SignedTransaction {
+            body_bytes,
+            sig_map: Some(proto::SignatureMap {
+                sig_pair: vec![proto::SignaturePair {
+                    pub_key_prefix: prefix.to_vec(),
+                    signature: Some(proto::signature_pair::Signature::EcdsaSecp256k1(
+                        signature.to_bytes().to_vec(),
+                    )),
+                }],
+            }),
+            ..Default::default()
+        };
+        proto::Transaction {
+            signed_transaction_bytes: signed.encode_to_vec(),
+            ..Default::default()
+        }
+    }
+
+    /// An unsigned envelope: the same body with an empty signature map.
+    fn unsigned(body: &proto::TransactionBody) -> proto::Transaction {
+        let signed = proto::SignedTransaction {
+            body_bytes: body.encode_to_vec(),
+            sig_map: Some(proto::SignatureMap::default()),
+            ..Default::default()
+        };
+        proto::Transaction {
+            signed_transaction_bytes: signed.encode_to_vec(),
+            ..Default::default()
+        }
+    }
+
+    fn transfer(to: EntityId, tinybar: i64) -> proto::transaction_body::Data {
+        proto::transaction_body::Data::CryptoTransfer(proto::CryptoTransferTransactionBody {
+            transfers: Some(proto::TransferList {
+                account_amounts: vec![
+                    proto::AccountAmount {
+                        account_id: Some(to_account_id(PAYER)),
+                        amount: -tinybar,
+                        ..Default::default()
+                    },
+                    proto::AccountAmount {
+                        account_id: Some(to_account_id(to)),
+                        amount: tinybar,
+                        ..Default::default()
+                    },
+                ],
+            }),
+            token_transfers: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn a_signed_transfer_reaches_consensus_and_charges_the_flat_fee() {
+        let mut chain = chain();
+        let before = chain.account(PAYER).expect("payer").balance;
+        let record = submit(
+            &mut chain,
+            &signed(&body(transfer(EntityId(1003), 500))),
+            NOW,
+            true,
+        )
+        .expect("precheck passes");
+
+        assert_eq!(record.status, Status::Success);
+        assert_eq!(record.charged_fee, HAPI_FEE);
+        assert_eq!(record.memo, "unit test");
+        assert_eq!(
+            chain.account(PAYER).expect("payer").balance.0,
+            before.0 - HAPI_FEE.0 - 500
+        );
+        assert_eq!(
+            chain.account(EntityId(1003)).expect("recipient").balance.0,
+            {
+                let genesis = Tinybar::from_hbar(10_000).0;
+                genesis + 500
+            }
+        );
+        // One entry per account: the fee leg and the transfer leg are the same payer.
+        assert_eq!(record.transfers.len(), 3);
+    }
+
+    /// One body that fails a single precheck: what it does wrong, how, and the code it earns.
+    type Case = (&'static str, fn(&mut proto::TransactionBody), Status);
+
+    /// Each precheck in the order `docs/code-plan.md` §5 fixes, one body that fails only it.
+    #[test]
+    fn prechecks_map_to_their_response_codes() {
+        let cases: [Case; 6] = [
+            (
+                "a node this network does not run",
+                |body| body.node_account_id = Some(to_account_id(EntityId(4))),
+                Status::InvalidNodeAccount,
+            ),
+            (
+                "no transaction id",
+                |body| body.transaction_id = None,
+                Status::InvalidTransactionId,
+            ),
+            (
+                "a duration past the 180 s cap",
+                |body| body.transaction_valid_duration = Some(proto::Duration { seconds: 181 }),
+                Status::InvalidTransactionDuration,
+            ),
+            (
+                "a valid start an hour ahead",
+                |body| {
+                    body.transaction_id = Some(to_transaction_id(TxId {
+                        payer: PAYER,
+                        valid_start: Timestamp {
+                            secs: NOW.secs + 3_600,
+                            nanos: 0,
+                        },
+                        nonce: 0,
+                        scheduled: false,
+                    }));
+                },
+                Status::InvalidTransactionStart,
+            ),
+            (
+                "a valid start that expired",
+                |body| {
+                    body.transaction_id = Some(to_transaction_id(TxId {
+                        payer: PAYER,
+                        valid_start: Timestamp {
+                            secs: NOW.secs - 3_600,
+                            nanos: 0,
+                        },
+                        nonce: 0,
+                        scheduled: false,
+                    }));
+                },
+                Status::TransactionExpired,
+            ),
+            (
+                "a payer with no account",
+                |body| {
+                    body.transaction_id = Some(to_transaction_id(TxId {
+                        payer: EntityId(9_999),
+                        valid_start: NOW,
+                        nonce: 0,
+                        scheduled: false,
+                    }));
+                },
+                Status::PayerAccountNotFound,
+            ),
+        ];
+
+        for (what, break_it, expected) in cases {
+            let mut chain = chain();
+            let mut body = body(transfer(EntityId(1003), 500));
+            break_it(&mut body);
+            let outcome = submit(&mut chain, &signed(&body), NOW, true);
+            assert_eq!(outcome.err(), Some(expected), "{what}");
+        }
+    }
+
+    #[test]
+    fn the_same_transaction_id_twice_is_a_duplicate() {
+        let mut chain = chain();
+        let envelope = signed(&body(transfer(EntityId(1003), 500)));
+        submit(&mut chain, &envelope, NOW, true).expect("first submission");
+        assert_eq!(
+            submit(&mut chain, &envelope, NOW, true).err(),
+            Some(Status::DuplicateTransaction)
+        );
+    }
+
+    #[test]
+    fn an_unsigned_body_is_refused_unless_signature_checking_is_off() {
+        let body = body(transfer(EntityId(1003), 500));
+        assert_eq!(
+            submit(&mut chain(), &unsigned(&body), NOW, true).err(),
+            Some(Status::InvalidSignature)
+        );
+        assert_eq!(
+            submit(&mut chain(), &unsigned(&body), NOW, false)
+                .expect("--no-sig-verify accepts it")
+                .status,
+            Status::Success
+        );
+    }
+
+    #[test]
+    fn a_body_hanvil_does_not_emulate_is_not_supported() {
+        let data = proto::transaction_body::Data::TokenCreation(
+            proto::TokenCreateTransactionBody::default(),
+        );
+        assert_eq!(
+            submit(&mut chain(), &signed(&body(data)), NOW, true).err(),
+            Some(Status::NotSupported)
+        );
+    }
+
+    /// A body that fails at consensus still produces a record and still costs the fee.
+    #[test]
+    fn a_transfer_list_that_does_not_balance_is_recorded_as_a_failure() {
+        let mut chain = chain();
+        let before = chain.account(PAYER).expect("payer").balance;
+        let data =
+            proto::transaction_body::Data::CryptoTransfer(proto::CryptoTransferTransactionBody {
+                transfers: Some(proto::TransferList {
+                    account_amounts: vec![proto::AccountAmount {
+                        account_id: Some(to_account_id(PAYER)),
+                        amount: -500,
+                        ..Default::default()
+                    }],
+                }),
+                token_transfers: Vec::new(),
+            });
+        let record = submit(&mut chain, &signed(&body(data)), NOW, true).expect("precheck passes");
+
+        assert_eq!(record.status, Status::InvalidAccountAmounts);
+        assert_eq!(
+            chain.account(PAYER).expect("payer").balance.0,
+            before.0 - HAPI_FEE.0,
+            "the fee is charged and the body is not applied"
+        );
+    }
+
+    #[test]
+    fn a_message_on_a_topic_that_does_not_exist_names_the_topic() {
+        let data = proto::transaction_body::Data::ConsensusSubmitMessage(
+            proto::ConsensusSubmitMessageTransactionBody {
+                topic_id: Some(to_topic_id(EntityId(9_999))),
+                message: b"hello".to_vec(),
+                chunk_info: None,
+            },
+        );
+        assert_eq!(
+            submit(&mut chain(), &signed(&body(data)), NOW, true).err(),
+            Some(Status::InvalidTopicId)
+        );
+    }
+}

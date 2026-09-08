@@ -71,6 +71,11 @@ async function boot() {
   return {
     client,
     ports,
+    // The mirror REST listener, so one test can prove a gRPC write is visible over HTTP.
+    async mirror(path) {
+      const response = await fetch(`http://127.0.0.1:${ports.mirror}/api/v1${path}`);
+      return { status: response.status, body: await response.json() };
+    },
     async close() {
       client.close();
       child.kill();
@@ -197,6 +202,65 @@ test("a transfer that does not balance is refused with the protocol's code", asy
         return true;
       },
     );
+  } finally {
+    await node.close();
+  }
+});
+
+test("what HAPI writes, the mirror REST API reads back", async () => {
+  const node = await boot();
+  try {
+    const { client } = node;
+
+    const key = PrivateKey.generateECDSA();
+    const created = await (await new AccountCreateTransaction()
+      .setECDSAKeyWithAlias(key)
+      .setInitialBalance(new Hbar(3))
+      .execute(client)).getReceipt(client);
+    const account = created.accountId;
+
+    const topicId = (await (await new TopicCreateTransaction()
+      .setTopicMemo("mirror check")
+      .execute(client)).getReceipt(client)).topicId;
+    const submitted = await new TopicMessageSubmitTransaction()
+      .setTopicId(topicId)
+      .setMessage("payload")
+      .execute(client);
+    await submitted.getReceipt(client);
+
+    const topic = await node.mirror(`/topics/${topicId.toString()}`);
+    assert.equal(topic.status, 200);
+    assert.equal(topic.body.memo, "mirror check");
+    assert.equal(topic.body.topic_id, topicId.toString());
+
+    const messages = await node.mirror(`/topics/${topicId.toString()}/messages`);
+    assert.equal(messages.status, 200);
+    assert.equal(messages.body.messages.length, 1);
+    assert.equal(Buffer.from(messages.body.messages[0].message, "base64").toString(), "payload");
+    assert.equal(messages.body.messages[0].running_hash_version, 3);
+    assert.equal(messages.body.messages[0].sequence_number, 1);
+
+    // The mirror's URL form of a transaction id is 0.0.x-sss-nnn, not the SDK's 0.0.x@sss.nnn.
+    const id = submitted.transactionId;
+    const url = `${id.accountId.toString()}-${id.validStart.seconds}-${String(id.validStart.nanos).padStart(9, "0")}`;
+    const byId = await node.mirror(`/transactions/${url}`);
+    assert.equal(byId.status, 200);
+    assert.equal(byId.body.transactions[0].name, "CONSENSUSSUBMITMESSAGE");
+    assert.equal(byId.body.transactions[0].result, "SUCCESS");
+    assert.equal(byId.body.transactions[0].entity_id, null);
+
+    const listed = await node.mirror("/transactions?transactiontype=CRYPTOCREATEACCOUNT");
+    assert.equal(listed.status, 200);
+    assert.equal(listed.body.transactions.length, 1);
+    assert.equal(listed.body.transactions[0].entity_id, account.toString());
+
+    const seen = await node.mirror(`/accounts/${account.toString()}`);
+    assert.equal(seen.status, 200);
+    assert.equal(seen.body.balance.balance, new Hbar(3).toTinybars().toNumber());
+
+    // The SDK's own id form is a 400, which is what PR #39's reader stops polling on.
+    const sdkForm = await node.mirror(`/transactions/${id.toString()}`);
+    assert.equal(sdkForm.status, 400);
   } finally {
     await node.close();
   }
