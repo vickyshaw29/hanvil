@@ -310,7 +310,8 @@ fn bloom(value: &Bloom) -> String {
 }
 
 /// `None` only for bytes that no longer decode, which the chain never holds: it decoded them once
-/// to execute them.
+/// to execute them. The renderers drop the envelope's fields rather than fail, the same stance
+/// `mirror::submitted::decode` takes on the same impossible input.
 fn decode_envelope(raw: &[u8]) -> Option<TxEnvelope> {
     TxEnvelope::decode_2718(&mut &raw[..]).ok()
 }

@@ -11,8 +11,8 @@ use crate::state::{
 fn exchange_rate(chain: &Chain) -> proto::ExchangeRateSet {
     let expires = chain.latest_block().consensus_timestamp.secs + EXCHANGE_RATE_VALID_SECS;
     let rate = proto::ExchangeRate {
-        hbar_equiv: HBAR_EQUIVALENT,
-        cent_equiv: CENT_EQUIVALENT,
+        hbar_equiv: HBAR_EQUIVALENT as i32,
+        cent_equiv: CENT_EQUIVALENT as i32,
         expiration_time: Some(proto::TimestampSeconds {
             seconds: expires as i64,
         }),

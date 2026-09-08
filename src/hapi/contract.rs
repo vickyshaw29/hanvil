@@ -43,11 +43,13 @@ impl SmartContractService for Node {
         if ask == queries::Ask::Answer {
             let mut chain = self.chain.write();
             let now = self.clock.now();
-            let local = self.run_local(&mut chain, query, now);
-            if let Some(status) = local.refused {
-                response.header = Some(queries::refused(ask, status));
+            match run_local(&mut chain, query, now) {
+                Local::Answered(result) => response.function_result = Some(result),
+                Local::Refused(status, result) => {
+                    response.header = Some(queries::refused(ask, status));
+                    response.function_result = result;
+                }
             }
-            response.function_result = local.result;
         }
         Ok(queries::respond(
             proto::response::Response::ContractCallLocal(response),
@@ -132,81 +134,67 @@ impl SmartContractService for Node {
     }
 }
 
-/// What a local call leaves for the response: the status the header carries when the call did not
-/// simply answer, and the result to attach. A revert or a halt sets both — it is an answer, not a
-/// transport failure, so the caller still gets the gas used and the revert data, as `eth_call`
-/// returns them.
-struct Local {
-    refused: Option<Status>,
-    result: Option<proto::ContractFunctionResult>,
+/// What a local call leaves for the response, in the same two shapes `queries::answered` and
+/// `queries::refused` give a header.
+enum Local {
+    /// The call ran and returned.
+    Answered(proto::ContractFunctionResult),
+    /// The call was refused. A revert or a halt still carries a result: it is an answer, not a
+    /// transport failure, so the caller reads the gas used and the revert data, as `eth_call`
+    /// returns them. Only an unknown contract has nothing to report.
+    Refused(Status, Option<proto::ContractFunctionResult>),
 }
 
-impl Local {
-    fn refused(status: Status) -> Self {
-        Self {
-            refused: Some(status),
-            result: None,
+/// Run a `ContractCallQuery` against the head state.
+fn run_local(chain: &mut Chain, query: &proto::ContractCallLocalQuery, now: Timestamp) -> Local {
+    let Some(entity) = render::contract_entity(chain, query.contract_id.as_ref()) else {
+        return Local::Refused(Status::InvalidContractId, None);
+    };
+    let Some(address) = chain.contract(entity).map(|contract| contract.address) else {
+        return Local::Refused(Status::InvalidContractId, None);
+    };
+    let call = CallRequest {
+        from: wire::account_id(query.sender_id.as_ref())
+            .and_then(|id| chain.account(id))
+            .map(|account| account.evm_address()),
+        to: Some(address),
+        gas: Some(query.gas.max(0) as u64).filter(|gas| *gas > 0),
+        gas_price: None,
+        value: 0,
+        input: Bytes::copy_from_slice(&query.function_parameters),
+    };
+    let mut result = proto::ContractFunctionResult {
+        contract_id: Some(wire::to_contract_id(entity)),
+        gas: query.gas,
+        function_parameters: query.function_parameters.clone(),
+        sender_id: query.sender_id.clone(),
+        ..Default::default()
+    };
+    let refused = match chain.call(&call, now) {
+        Err(error) => {
+            result.error_message = error.to_string();
+            Some(Status::ContractExecutionException)
         }
-    }
-}
-
-impl Node {
-    /// Run a `ContractCallQuery` against the head state.
-    fn run_local(
-        &self,
-        chain: &mut Chain,
-        query: &proto::ContractCallLocalQuery,
-        now: Timestamp,
-    ) -> Local {
-        let Some(entity) = render::contract_entity(chain, query.contract_id.as_ref()) else {
-            return Local::refused(Status::InvalidContractId);
-        };
-        let Some(address) = chain.contract(entity).map(|contract| contract.address) else {
-            return Local::refused(Status::InvalidContractId);
-        };
-        let call = CallRequest {
-            from: wire::account_id(query.sender_id.as_ref())
-                .and_then(|id| chain.account(id))
-                .map(|account| account.evm_address()),
-            to: Some(address),
-            gas: Some(query.gas.max(0) as u64).filter(|gas| *gas > 0),
-            gas_price: None,
-            value: 0,
-            input: Bytes::copy_from_slice(&query.function_parameters),
-        };
-        let mut result = proto::ContractFunctionResult {
-            contract_id: Some(wire::to_contract_id(entity)),
-            gas: query.gas,
-            function_parameters: query.function_parameters.clone(),
-            sender_id: query.sender_id.clone(),
-            ..Default::default()
-        };
-        let refused = match chain.call(&call, now) {
-            Err(error) => {
-                result.error_message = error.to_string();
-                Some(Status::ContractExecutionException)
-            }
-            Ok(executed) => {
-                result.gas_used = executed.tx_gas_used();
-                match executed {
-                    ExecutionResult::Success { output, .. } => {
-                        result.contract_call_result = output.into_data().to_vec();
-                        None
-                    }
-                    ExecutionResult::Revert { output, .. } => {
-                        result.contract_call_result = output.to_vec();
-                        Some(Status::ContractRevertExecuted)
-                    }
-                    ExecutionResult::Halt { reason, .. } => {
-                        result.error_message = format!("{reason:?}");
-                        Some(Status::ContractExecutionException)
-                    }
+        Ok(executed) => {
+            result.gas_used = executed.tx_gas_used();
+            match executed {
+                ExecutionResult::Success { output, .. } => {
+                    result.contract_call_result = output.into_data().to_vec();
+                    None
+                }
+                ExecutionResult::Revert { output, .. } => {
+                    result.contract_call_result = output.to_vec();
+                    Some(Status::ContractRevertExecuted)
+                }
+                ExecutionResult::Halt { reason, .. } => {
+                    result.error_message = format!("{reason:?}");
+                    Some(Status::ContractExecutionException)
                 }
             }
-        };
-        Local {
-            refused,
-            result: Some(result),
         }
+    };
+    match refused {
+        Some(status) => Local::Refused(status, Some(result)),
+        None => Local::Answered(result),
     }
 }

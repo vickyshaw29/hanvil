@@ -96,9 +96,9 @@ const TOTAL_SUPPLY: Tinybar = Tinybar::from_hbar(50_000_000_000);
 pub const AUTO_RENEW_PERIOD_SECS: u64 = 7_776_000;
 /// The fixed rate `/api/v1/network/exchangerate` and every HAPI receipt report: 30,000 ℏ per
 /// 360,000 ¢, or 1 ℏ = 12 ¢. Hanvil has no price feed and never expires the rate.
-pub const HBAR_EQUIVALENT: i32 = 30_000;
+pub const HBAR_EQUIVALENT: u32 = 30_000;
 /// Cent side of [`HBAR_EQUIVALENT`].
-pub const CENT_EQUIVALENT: i32 = 360_000;
+pub const CENT_EQUIVALENT: u32 = 360_000;
 /// How far ahead of the head block the reported rate claims to be valid.
 pub const EXCHANGE_RATE_VALID_SECS: u64 = 86_400;
 

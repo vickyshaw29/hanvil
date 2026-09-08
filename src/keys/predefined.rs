@@ -59,18 +59,6 @@ pub fn treasury_key() -> Result<crate::state::Key, Error> {
     ed25519_public(&decode_hex(TREASURY_ED25519_SEED)?)
 }
 
-/// How a group of predefined keys becomes accounts.
-enum Curve {
-    /// secp256k1; `alias` decides whether the account carries its EVM alias or only a long-zero
-    /// address, which is the only difference between the two ECDSA groups.
-    Ecdsa {
-        /// Give the account its keccak-derived EVM alias.
-        alias: bool,
-    },
-    /// ed25519; these accounts have no EVM alias.
-    Ed25519,
-}
-
 /// Predefined accounts, `per_type` of each kind, ids allocated sequentially from 1002 in the
 /// order ECDSA, ECDSA-alias, ED25519 — exactly how hiero-local-node numbers them.
 pub fn accounts(
@@ -78,6 +66,15 @@ pub fn accounts(
     balance: Tinybar,
     created_at: Timestamp,
 ) -> Result<Vec<Account>, Error> {
+    /// How a group of predefined keys becomes accounts.
+    enum Curve {
+        /// secp256k1; `alias` decides whether the account carries its EVM alias or only a
+        /// long-zero address, the only difference between the two ECDSA groups.
+        Ecdsa { alias: bool },
+        /// ed25519; these accounts have no EVM alias.
+        Ed25519,
+    }
+
     let per_group = usize::from(per_type).min(10);
     let groups = [
         (&ECDSA, Curve::Ecdsa { alias: false }),
