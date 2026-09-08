@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 
 use super::RpcError;
 use crate::evm::units::{Tinybar, WEIBAR_PER_TINYBAR};
-use crate::state::{Block, CallRequest, Chain, LogFilter, StoredLog, TxBody, TxRecord};
+use crate::state::{Block, CallRequest, Chain, LogFilter, StoredLog, TxBody, TxRecord, UnsignedTx};
 
 /// `0x`-prefixed minimal hex, as every Ethereum QUANTITY is encoded. Zero is `0x0`.
 pub fn quantity(value: U256) -> String {
@@ -259,8 +259,9 @@ pub fn block_json(chain: &Chain, block: &Block, full: bool) -> Value {
             }
         })
         .collect();
-    // Field set and roots follow the relay: stateRoot and receiptsRoot are zero, transactionsRoot
-    // is the block hash when the block has transactions (relay `Block` model). VERIFY on Day 2.
+    // Every field `Block` requires in the relay's openrpc.json is present. VERIFY the roots: the
+    // schema requires stateRoot, transactionsRoot and receiptsRoot but not what a chain with no
+    // Merkle tries puts in them, so these are zero and, for transactionsRoot, the block hash.
     json!({
         "number": quantity_u64(block.number),
         "hash": hash(&block.hash),
@@ -308,6 +309,12 @@ fn bloom(value: &Bloom) -> String {
     format!("{value:#x}")
 }
 
+/// `None` only for bytes that no longer decode, which the chain never holds: it decoded them once
+/// to execute them.
+fn decode_envelope(raw: &[u8]) -> Option<TxEnvelope> {
+    TxEnvelope::decode_2718(&mut &raw[..]).ok()
+}
+
 /// Transaction object for `eth_getTransactionByHash` and full blocks.
 pub fn tx_json(tx: &TxRecord) -> Value {
     let mut object = Map::new();
@@ -318,30 +325,36 @@ pub fn tx_json(tx: &TxRecord) -> Value {
     object.insert("transactionIndex".into(), json!(quantity_u64(tx.index)));
     match &tx.body {
         TxBody::Signed(raw) => {
-            if let Ok(envelope) = TxEnvelope::decode_2718(&mut &raw[..]) {
+            if let Some(envelope) = decode_envelope(raw) {
                 signed_fields(&mut object, &envelope);
             }
         }
-        TxBody::Unsigned(u) => {
-            object.insert("type".into(), json!("0x0"));
-            object.insert("nonce".into(), json!(quantity_u64(u.nonce)));
-            object.insert("gas".into(), json!(quantity_u64(u.gas_limit)));
-            object.insert("gasPrice".into(), json!(weibar_u64(u.gas_price)));
-            object.insert(
-                "to".into(),
-                u.to.as_ref()
-                    .map(address)
-                    .map_or(Value::Null, Value::String),
-            );
-            object.insert("value".into(), json!(weibar_u64(u.value)));
-            object.insert("input".into(), json!(data(&u.input)));
-            object.insert("chainId".into(), Value::Null);
-            object.insert("v".into(), json!("0x0"));
-            object.insert("r".into(), json!("0x0"));
-            object.insert("s".into(), json!("0x0"));
-        }
+        TxBody::Unsigned(unsigned) => unsigned_fields(&mut object, unsigned),
     }
     Value::Object(object)
+}
+
+/// An `eth_sendTransaction` body has no signature and no chain id, so those fields are zero and
+/// null rather than absent: the relay returns the whole object either way.
+fn unsigned_fields(object: &mut Map<String, Value>, unsigned: &UnsignedTx) {
+    object.insert("type".into(), json!("0x0"));
+    object.insert("nonce".into(), json!(quantity_u64(unsigned.nonce)));
+    object.insert("gas".into(), json!(quantity_u64(unsigned.gas_limit)));
+    object.insert("gasPrice".into(), json!(weibar_u64(unsigned.gas_price)));
+    object.insert(
+        "to".into(),
+        unsigned
+            .to
+            .as_ref()
+            .map(address)
+            .map_or(Value::Null, Value::String),
+    );
+    object.insert("value".into(), json!(weibar_u64(unsigned.value)));
+    object.insert("input".into(), json!(data(&unsigned.input)));
+    object.insert("chainId".into(), Value::Null);
+    object.insert("v".into(), json!("0x0"));
+    object.insert("r".into(), json!("0x0"));
+    object.insert("s".into(), json!("0x0"));
 }
 
 fn signed_fields(object: &mut Map<String, Value>, envelope: &TxEnvelope) {
@@ -414,17 +427,11 @@ fn signed_fields(object: &mut Map<String, Value>, envelope: &TxEnvelope) {
 
 /// Receipt object (`ReceiptInfo` in the relay's openrpc.json).
 pub fn receipt_json(tx: &TxRecord) -> Value {
-    let to = match &tx.body {
-        TxBody::Signed(raw) => TxEnvelope::decode_2718(&mut &raw[..])
-            .ok()
-            .and_then(|e| e.to()),
-        TxBody::Unsigned(u) => u.to,
-    };
-    let tx_type = match &tx.body {
-        TxBody::Signed(raw) => TxEnvelope::decode_2718(&mut &raw[..])
-            .map(|e| e.tx_type() as u8)
-            .unwrap_or(0),
-        TxBody::Unsigned(_) => 0,
+    let (tx_type, to) = match &tx.body {
+        TxBody::Signed(raw) => {
+            decode_envelope(raw).map_or((0, None), |e| (e.tx_type() as u8, e.to()))
+        }
+        TxBody::Unsigned(unsigned) => (0, unsigned.to),
     };
     let mut object = json!({
         "type": quantity_u64(u64::from(tx_type)),
@@ -444,7 +451,9 @@ pub fn receipt_json(tx: &TxRecord) -> Value {
         "effectiveGasPrice": weibar_u64(tx.receipt.effective_gas_price),
     });
     if !tx.receipt.success {
-        // The relay adds `revertReason` (the raw revert data) on failed receipts. VERIFY wording.
+        // VERIFY: `ReceiptInfo` in the relay's openrpc.json has no `revertReason` property
+        // (checked 2026-09-08). The field is kept because a caller reading a failed receipt has
+        // nowhere else to find the revert data; if the relay does not send it, drop it.
         object["revertReason"] = json!(data(&tx.receipt.output));
     }
     object

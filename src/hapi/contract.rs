@@ -9,7 +9,7 @@ use tonic::{Request, Response, Status as GrpcStatus};
 
 use super::proto::smart_contract_service_server::SmartContractService;
 use super::{Node, proto, queries, render, wire};
-use crate::state::{CallRequest, Status};
+use crate::state::{CallRequest, Chain, Status, Timestamp};
 
 /// The message every refused contract method carries, so a caller is pointed at the surface that
 /// does work rather than left guessing.
@@ -42,66 +42,12 @@ impl SmartContractService for Node {
         };
         if ask == queries::Ask::Answer {
             let mut chain = self.chain.write();
-            let target = render::contract_entity(&chain, query.contract_id.as_ref())
-                .and_then(|id| chain.contract(id))
-                .map(|contract| contract.address);
-            match target {
-                None => response.header = Some(queries::refused(ask, Status::InvalidContractId)),
-                Some(address) => {
-                    let call = CallRequest {
-                        from: wire::account_id(query.sender_id.as_ref())
-                            .and_then(|id| chain.account(id))
-                            .map(|account| account.evm_address()),
-                        to: Some(address),
-                        gas: Some(query.gas.max(0) as u64).filter(|gas| *gas > 0),
-                        gas_price: None,
-                        value: 0,
-                        input: Bytes::copy_from_slice(&query.function_parameters),
-                    };
-                    let now = self.clock.now();
-                    let contract_id = render::contract_entity(&chain, query.contract_id.as_ref())
-                        .map(wire::to_contract_id);
-                    let mut result = proto::ContractFunctionResult {
-                        contract_id,
-                        gas: query.gas,
-                        function_parameters: query.function_parameters.clone(),
-                        sender_id: query.sender_id.clone(),
-                        ..Default::default()
-                    };
-                    match chain.call(&call, now) {
-                        Ok(result_ok @ ExecutionResult::Success { .. }) => {
-                            result.gas_used = result_ok.tx_gas_used();
-                            if let ExecutionResult::Success { output, .. } = result_ok {
-                                result.contract_call_result = output.into_data().to_vec();
-                            }
-                        }
-                        // A revert is an answer, not a transport failure: the caller reads the
-                        // status and the revert data, as `eth_call` returns them.
-                        Ok(reverted @ ExecutionResult::Revert { .. }) => {
-                            result.gas_used = reverted.tx_gas_used();
-                            if let ExecutionResult::Revert { output, .. } = reverted {
-                                result.contract_call_result = output.to_vec();
-                            }
-                            response.header =
-                                Some(queries::refused(ask, Status::ContractRevertExecuted));
-                        }
-                        Ok(halted @ ExecutionResult::Halt { .. }) => {
-                            result.gas_used = halted.tx_gas_used();
-                            if let ExecutionResult::Halt { reason, .. } = halted {
-                                result.error_message = format!("{reason:?}");
-                            }
-                            response.header =
-                                Some(queries::refused(ask, Status::ContractExecutionException));
-                        }
-                        Err(error) => {
-                            result.error_message = error.to_string();
-                            response.header =
-                                Some(queries::refused(ask, Status::ContractExecutionException));
-                        }
-                    }
-                    response.function_result = Some(result);
-                }
+            let now = self.clock.now();
+            let local = self.run_local(&mut chain, query, now);
+            if let Some(status) = local.refused {
+                response.header = Some(queries::refused(ask, status));
             }
+            response.function_result = local.result;
         }
         Ok(queries::respond(
             proto::response::Response::ContractCallLocal(response),
@@ -183,5 +129,84 @@ impl SmartContractService for Node {
         _: Request<proto::Query>,
     ) -> Result<Response<proto::Response>, GrpcStatus> {
         Err(Node::unsupported_query(USE_JSON_RPC))
+    }
+}
+
+/// What a local call leaves for the response: the status the header carries when the call did not
+/// simply answer, and the result to attach. A revert or a halt sets both — it is an answer, not a
+/// transport failure, so the caller still gets the gas used and the revert data, as `eth_call`
+/// returns them.
+struct Local {
+    refused: Option<Status>,
+    result: Option<proto::ContractFunctionResult>,
+}
+
+impl Local {
+    fn refused(status: Status) -> Self {
+        Self {
+            refused: Some(status),
+            result: None,
+        }
+    }
+}
+
+impl Node {
+    /// Run a `ContractCallQuery` against the head state.
+    fn run_local(
+        &self,
+        chain: &mut Chain,
+        query: &proto::ContractCallLocalQuery,
+        now: Timestamp,
+    ) -> Local {
+        let Some(entity) = render::contract_entity(chain, query.contract_id.as_ref()) else {
+            return Local::refused(Status::InvalidContractId);
+        };
+        let Some(address) = chain.contract(entity).map(|contract| contract.address) else {
+            return Local::refused(Status::InvalidContractId);
+        };
+        let call = CallRequest {
+            from: wire::account_id(query.sender_id.as_ref())
+                .and_then(|id| chain.account(id))
+                .map(|account| account.evm_address()),
+            to: Some(address),
+            gas: Some(query.gas.max(0) as u64).filter(|gas| *gas > 0),
+            gas_price: None,
+            value: 0,
+            input: Bytes::copy_from_slice(&query.function_parameters),
+        };
+        let mut result = proto::ContractFunctionResult {
+            contract_id: Some(wire::to_contract_id(entity)),
+            gas: query.gas,
+            function_parameters: query.function_parameters.clone(),
+            sender_id: query.sender_id.clone(),
+            ..Default::default()
+        };
+        let refused = match chain.call(&call, now) {
+            Err(error) => {
+                result.error_message = error.to_string();
+                Some(Status::ContractExecutionException)
+            }
+            Ok(executed) => {
+                result.gas_used = executed.tx_gas_used();
+                match executed {
+                    ExecutionResult::Success { output, .. } => {
+                        result.contract_call_result = output.into_data().to_vec();
+                        None
+                    }
+                    ExecutionResult::Revert { output, .. } => {
+                        result.contract_call_result = output.to_vec();
+                        Some(Status::ContractRevertExecuted)
+                    }
+                    ExecutionResult::Halt { reason, .. } => {
+                        result.error_message = format!("{reason:?}");
+                        Some(Status::ContractExecutionException)
+                    }
+                }
+            }
+        };
+        Local {
+            refused,
+            result: Some(result),
+        }
     }
 }

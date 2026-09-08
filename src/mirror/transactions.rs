@@ -66,12 +66,17 @@ struct Entry {
 
 impl Entry {
     fn involves(&self, id: EntityId) -> bool {
-        self.body["transfers"].as_array().is_some_and(|entries| {
-            entries
-                .iter()
-                .any(|entry| entry["account"] == json!(id.to_string()))
-        })
+        names_account(&self.body["transfers"], id)
     }
+}
+
+/// Whether a rendered transfer list names `id`.
+fn names_account(transfers: &Value, id: EntityId) -> bool {
+    transfers.as_array().is_some_and(|entries| {
+        entries
+            .iter()
+            .any(|entry| entry["account"] == json!(id.to_string()))
+    })
 }
 
 /// Every transaction the chain holds, oldest first: the EVM ones, and the HAPI ones. An EVM
@@ -358,9 +363,5 @@ fn transfers(chain: &Chain, tx: &TxRecord) -> Value {
 
 /// Whether `id` is a party to the transaction, which is what `?account.id=` filters on.
 pub(super) fn involves(chain: &Chain, tx: &TxRecord, id: EntityId) -> bool {
-    transfers(chain, tx).as_array().is_some_and(|entries| {
-        entries
-            .iter()
-            .any(|entry| entry["account"] == json!(id.to_string()))
-    })
+    names_account(&transfers(chain, tx), id)
 }

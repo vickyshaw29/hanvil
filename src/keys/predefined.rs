@@ -59,6 +59,18 @@ pub fn treasury_key() -> Result<crate::state::Key, Error> {
     ed25519_public(&decode_hex(TREASURY_ED25519_SEED)?)
 }
 
+/// How a group of predefined keys becomes accounts.
+enum Curve {
+    /// secp256k1; `alias` decides whether the account carries its EVM alias or only a long-zero
+    /// address, which is the only difference between the two ECDSA groups.
+    Ecdsa {
+        /// Give the account its keccak-derived EVM alias.
+        alias: bool,
+    },
+    /// ed25519; these accounts have no EVM alias.
+    Ed25519,
+}
+
 /// Predefined accounts, `per_type` of each kind, ids allocated sequentially from 1002 in the
 /// order ECDSA, ECDSA-alias, ED25519 — exactly how hiero-local-node numbers them.
 pub fn accounts(
@@ -66,68 +78,40 @@ pub fn accounts(
     balance: Tinybar,
     created_at: Timestamp,
 ) -> Result<Vec<Account>, Error> {
-    let n = usize::from(per_type).min(10);
-    let mut out = Vec::with_capacity(n * 3);
-    let mut next = FIRST_USER_ID;
+    let per_group = usize::from(per_type).min(10);
+    let groups = [
+        (&ECDSA, Curve::Ecdsa { alias: false }),
+        (&ECDSA_ALIAS, Curve::Ecdsa { alias: true }),
+        (&ED25519, Curve::Ed25519),
+    ];
 
-    for hex_key in ECDSA.iter().take(n) {
-        let (key, _alias) = ecdsa_public(&decode_hex(hex_key)?)?;
-        out.push(dev_account(
-            EntityId(next),
-            key,
-            None,
-            balance,
-            created_at,
-            hex_key,
-        ));
-        next += 1;
-    }
-    for hex_key in ECDSA_ALIAS.iter().take(n) {
-        let (key, alias) = ecdsa_public(&decode_hex(hex_key)?)?;
-        out.push(dev_account(
-            EntityId(next),
-            key,
-            Some(alias),
-            balance,
-            created_at,
-            hex_key,
-        ));
-        next += 1;
-    }
-    for hex_key in ED25519.iter().take(n) {
-        let key = ed25519_public(&decode_hex(hex_key)?)?;
-        out.push(dev_account(
-            EntityId(next),
-            key,
-            None,
-            balance,
-            created_at,
-            hex_key,
-        ));
-        next += 1;
+    let mut out = Vec::with_capacity(per_group * groups.len());
+    let mut next = FIRST_USER_ID;
+    for (hex_keys, curve) in groups {
+        for hex_key in hex_keys.iter().take(per_group) {
+            let private = decode_hex(hex_key)?;
+            let (key, alias) = match curve {
+                Curve::Ecdsa { alias } => {
+                    let (key, derived) = ecdsa_public(&private)?;
+                    (key, alias.then_some(derived))
+                }
+                Curve::Ed25519 => (ed25519_public(&private)?, None),
+            };
+            out.push(Account {
+                id: EntityId(next),
+                key: Some(key),
+                alias,
+                balance,
+                nonce: 0,
+                deleted: false,
+                memo: String::new(),
+                created_at,
+                private_key_hex: Some((*hex_key).to_string()),
+            });
+            next += 1;
+        }
     }
     Ok(out)
-}
-
-fn dev_account(
-    id: EntityId,
-    key: crate::state::Key,
-    alias: Option<alloy_primitives::Address>,
-    balance: Tinybar,
-    created_at: Timestamp,
-    private_key_hex: &str,
-) -> Account {
-    Account {
-        id,
-        key: Some(key),
-        alias,
-        balance,
-        nonce: 0,
-        deleted: false,
-        memo: String::new(),
-        created_at,
-        private_key_hex: Some(private_key_hex.to_string()),
-    }
 }
 
 #[cfg(test)]

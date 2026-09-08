@@ -568,13 +568,12 @@ impl Chain {
             .chain_id(Some(self.chain_id))
             .build()
             .map_err(|e| Error::Rejected(Rejected::Other(format!("{e:?}"))))?;
-        let effective_gas_price = tx.gas_price;
         self.execute_and_mine(
             hash,
             TxBody::Unsigned(tx.clone()),
             tx.from,
             env,
-            effective_gas_price,
+            tx.gas_price,
             now,
         )
     }
