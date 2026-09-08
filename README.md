@@ -141,10 +141,18 @@ node <harness>/dist/index.js run   .harness/spec.yaml
 `.github/workflows/ci.yml` runs exactly that on every push, with no secrets, and asserts the
 signer reached `network: local` rather than trusting the verdict.
 
-`network: "local"` is not in `hedera-harness` yet. It is one of two PRs against
-`hedera-dev/hedera-harness` `dev`: this one, and a snapshot per repair attempt so retries do not
-inherit the previous attempt's on-chain state. Neither is open yet; the CI job builds the harness
-from the branch that carries the first.
+`network: "local"` is not in `hedera-harness` yet. It is one of two branches against
+`hedera-dev/hedera-harness` `dev`:
+
+| Branch | What it does |
+| --- | --- |
+| `feat/chain-network-local` | `network: "local"` for the signer, `doctor` and the validator prompt |
+| `feat/chain-snapshot-per-attempt` | `evm_snapshot` before an attempt, `evm_revert` after a failed one |
+
+Without the second, a repair attempt inherits whatever the previous attempt wrote on chain. On a
+recipe that mines three blocks per attempt and then fails, attempts end at block `0x3`, `0x6`,
+`0x9`; with it, `0x3`, `0x3`, `0x3`. Neither PR is open yet; CI builds the harness from the second
+branch, which contains both.
 
 ## How it is built
 

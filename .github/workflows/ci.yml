@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       HARNESS_REPO: vickyshaw29/hedera-harness
-      HARNESS_REF: feat/local-network
+      HARNESS_REF: feat/chain-snapshot-per-attempt
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
