@@ -79,8 +79,12 @@ jobs:
           cp -R tests/harness "$RUNNER_TEMP/project"
           cd "$RUNNER_TEMP/project"
           git init -q -b main .
-          git -c user.email=ci@hanvil -c user.name=CI add -A
-          git -c user.email=ci@hanvil -c user.name=CI commit -q --no-gpg-sign -m "fixture"
+          # Set on the repo, not per-command: the harness commits each passing attempt itself,
+          # and a runner has no global git identity for it to inherit.
+          git config user.email ci@hanvil
+          git config user.name CI
+          git add -A
+          git commit -q --no-gpg-sign -m "fixture"
 
       - name: Start hanvil
         run: |
