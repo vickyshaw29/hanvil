@@ -3,6 +3,7 @@
 
 pub mod accounts;
 pub mod blocks;
+pub mod hapi;
 pub mod time;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -19,6 +20,9 @@ use revm::state::{AccountInfo, Bytecode};
 pub use accounts::{Account, EntityId, Key};
 pub use blocks::{
     Block, CallRequest, LogFilter, Receipt, Slot, StoredLog, TxBody, TxRecord, UnsignedTx,
+};
+pub use hapi::{
+    AccountRef, Body, Digest384, Record, Status, Topic, TopicMessage, Transaction, Transfer, TxId,
 };
 pub use time::{Clock, Timestamp};
 
@@ -81,6 +85,9 @@ pub const NODE: EntityId = EntityId(3);
 pub const FEE_COLLECTOR: EntityId = EntityId(98);
 /// Block gas limit reported to clients. Hedera's per-transaction cap is 15M; a block holds two.
 pub const BLOCK_GAS_LIMIT: u64 = 30_000_000;
+/// Fee charged for every HAPI transaction, whatever the body. Hanvil does not emulate Hedera's
+/// fee schedule; this is one flat number, listed in the README under what is not emulated.
+pub const HAPI_FEE: Tinybar = Tinybar(10_000);
 /// Total supply, 50 billion HBAR, minted to the treasury.
 const TOTAL_SUPPLY: Tinybar = Tinybar::from_hbar(50_000_000_000);
 
@@ -114,6 +121,9 @@ pub struct Chain {
     next_timestamp: Option<u64>,
     last_consensus: Timestamp,
     impersonated: HashSet<Address>,
+    topics: BTreeMap<EntityId, Topic>,
+    hapi_records: Vec<Record>,
+    hapi_by_id: HashMap<TxId, usize>,
     snapshots: BTreeMap<u64, Chain>,
     next_snapshot: u64,
 }
@@ -136,6 +146,9 @@ impl Chain {
             next_timestamp: None,
             last_consensus: genesis.now,
             impersonated: HashSet::new(),
+            topics: BTreeMap::new(),
+            hapi_records: Vec::new(),
+            hapi_by_id: HashMap::new(),
             snapshots: BTreeMap::new(),
             next_snapshot: 0,
         };
@@ -753,6 +766,331 @@ impl Chain {
         }
     }
 
+    // ---- HAPI --------------------------------------------------------------------------------
+
+    /// A topic by id.
+    pub fn topic(&self, id: EntityId) -> Option<&Topic> {
+        self.topics.get(&id)
+    }
+
+    /// The record left by a HAPI transaction id.
+    pub fn hapi_record(&self, id: &TxId) -> Option<&Record> {
+        self.hapi_by_id
+            .get(id)
+            .and_then(|i| self.hapi_records.get(*i))
+    }
+
+    /// Every HAPI record, oldest first.
+    pub fn hapi_records(&self) -> impl Iterator<Item = &Record> {
+        self.hapi_records.iter()
+    }
+
+    /// Whether this transaction id already reached consensus (`DUPLICATE_TRANSACTION`).
+    pub fn has_transaction_id(&self, id: &TxId) -> bool {
+        self.hapi_by_id.contains_key(id)
+    }
+
+    /// Apply one decoded HAPI transaction. The fee is charged first and stays charged even when
+    /// the body fails, as on Hedera; every body validates completely before it mutates, so a
+    /// failure leaves nothing half-applied. Always produces a record — prechecks that would stop
+    /// a transaction reaching consensus run in `hapi/`, before this is called.
+    pub fn apply_hapi(&mut self, tx: Transaction, now: Timestamp) -> Record {
+        let consensus = self.next_consensus(now);
+        let mut record = Record {
+            id: tx.id,
+            kind: tx.body.kind(),
+            consensus_timestamp: consensus,
+            status: Status::Success,
+            charged_fee: HAPI_FEE,
+            max_fee: tx.max_fee,
+            memo: tx.memo,
+            hash: tx.hash,
+            valid_duration_seconds: tx.valid_duration_seconds,
+            transfers: Vec::new(),
+            created_account: None,
+            created_alias: None,
+            created_topic: None,
+            topic_sequence_number: 0,
+            topic_running_hash: Vec::new(),
+            ethereum_hash: Vec::new(),
+        };
+        self.move_tinybar(tx.id.payer, FEE_COLLECTOR, HAPI_FEE, &mut record.transfers);
+
+        if let Err(status) = self.apply_body(tx.body, &mut record, consensus) {
+            record.status = status;
+        }
+        record.transfers = aggregate(record.transfers);
+
+        self.hapi_by_id.insert(record.id, self.hapi_records.len());
+        self.hapi_records.push(record.clone());
+        record
+    }
+
+    /// The body half of [`Chain::apply_hapi`]. Validates, then mutates.
+    fn apply_body(
+        &mut self,
+        body: Body,
+        record: &mut Record,
+        consensus: Timestamp,
+    ) -> Result<(), Status> {
+        match body {
+            Body::CreateAccount {
+                key,
+                initial_balance,
+                alias,
+                memo,
+            } => {
+                if alias.is_some_and(|alias| self.by_evm.contains_key(&alias)) {
+                    return Err(Status::AliasAlreadyAssigned);
+                }
+                if self.balance_of(record.id.payer) < initial_balance {
+                    return Err(Status::InsufficientPayerBalance);
+                }
+                let id = self.allocate_id();
+                self.insert_account(Account {
+                    id,
+                    key: Some(key),
+                    alias,
+                    balance: Tinybar(0),
+                    nonce: 0,
+                    deleted: false,
+                    memo,
+                    created_at: consensus,
+                    private_key_hex: None,
+                });
+                self.move_tinybar(record.id.payer, id, initial_balance, &mut record.transfers);
+                record.created_account = Some(id);
+                record.created_alias = alias;
+                Ok(())
+            }
+
+            Body::Transfer { amounts } => self.apply_transfer(amounts, record, consensus),
+
+            Body::Delete {
+                account,
+                transfer_to,
+            } => {
+                if account == transfer_to {
+                    return Err(Status::InvalidTransferAccountId);
+                }
+                if !self.is_live(account) {
+                    return Err(Status::AccountDeleted);
+                }
+                if !self.is_live(transfer_to) {
+                    return Err(Status::InvalidTransferAccountId);
+                }
+                let balance = self.balance_of(account);
+                self.move_tinybar(account, transfer_to, balance, &mut record.transfers);
+                if let Some(target) = self.accounts.get_mut(&account) {
+                    target.deleted = true;
+                }
+                Ok(())
+            }
+
+            Body::CreateTopic {
+                memo,
+                admin_key,
+                submit_key,
+                auto_renew_period,
+                auto_renew_account,
+            } => {
+                let id = self.allocate_id();
+                self.topics.insert(
+                    id,
+                    Topic {
+                        id,
+                        memo,
+                        admin_key,
+                        submit_key,
+                        sequence_number: 0,
+                        running_hash: Digest384::default(),
+                        created_at: consensus,
+                        auto_renew_period,
+                        auto_renew_account,
+                        messages: Vec::new(),
+                    },
+                );
+                record.created_topic = Some(id);
+                Ok(())
+            }
+
+            Body::SubmitMessage { topic, message } => {
+                if message.is_empty() {
+                    return Err(Status::InvalidTopicMessage);
+                }
+                let payer = record.id.payer;
+                let Some(target) = self.topics.get_mut(&topic) else {
+                    return Err(Status::InvalidTopicId);
+                };
+                let sequence_number = target.sequence_number + 1;
+                let running_hash = hapi::running_hash_v3(
+                    &target.running_hash,
+                    payer,
+                    topic,
+                    consensus,
+                    sequence_number,
+                    &message,
+                );
+                target.sequence_number = sequence_number;
+                target.running_hash = running_hash;
+                target.messages.push(TopicMessage {
+                    sequence_number,
+                    message,
+                    running_hash,
+                    consensus_timestamp: consensus,
+                    payer,
+                });
+                record.topic_sequence_number = sequence_number;
+                record.topic_running_hash = running_hash.as_bytes().to_vec();
+                Ok(())
+            }
+
+            Body::Ethereum { rlp } => match self.send_raw(Bytes::from(rlp), consensus) {
+                Ok(hash) => {
+                    record.ethereum_hash = hash.to_vec();
+                    let succeeded = self.transaction(&hash).is_some_and(|tx| tx.receipt.success);
+                    if succeeded {
+                        Ok(())
+                    } else {
+                        // The mirror reports a reverting EVM call this way; the record still
+                        // exists and the hash still resolves.
+                        Err(Status::ContractRevertExecuted)
+                    }
+                }
+                Err(_) => Err(Status::InvalidTransactionBody),
+            },
+        }
+    }
+
+    /// `cryptoTransfer`'s HBAR list: sums to zero, no account twice, every debit funded.
+    fn apply_transfer(
+        &mut self,
+        amounts: Vec<(AccountRef, i64)>,
+        record: &mut Record,
+        consensus: Timestamp,
+    ) -> Result<(), Status> {
+        if amounts
+            .iter()
+            .map(|(_, amount)| *amount as i128)
+            .sum::<i128>()
+            != 0
+        {
+            return Err(Status::InvalidAccountAmounts);
+        }
+
+        // Resolve every reference first: a credit to an unknown alias creates a hollow account,
+        // which is how a fresh EVM key gets funded, but only once the whole list is valid.
+        let mut resolved: Vec<(EntityId, i64)> = Vec::with_capacity(amounts.len());
+        let mut created: Vec<(Address, i64)> = Vec::new();
+        for (account, amount) in &amounts {
+            match account {
+                AccountRef::Id(id) => {
+                    if !self.is_live(*id) {
+                        return Err(if self.accounts.contains_key(id) {
+                            Status::AccountDeleted
+                        } else {
+                            Status::InvalidAccountId
+                        });
+                    }
+                    resolved.push((*id, *amount));
+                }
+                AccountRef::Alias(address) => match self.by_evm.get(address).copied() {
+                    Some(id) => {
+                        if !self.is_live(id) {
+                            return Err(Status::AccountDeleted);
+                        }
+                        resolved.push((id, *amount));
+                    }
+                    None if *amount > 0 => created.push((*address, *amount)),
+                    None => return Err(Status::InvalidAccountId),
+                },
+            }
+        }
+
+        let mut seen: Vec<EntityId> = resolved.iter().map(|(id, _)| *id).collect();
+        seen.sort_unstable();
+        if seen.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(Status::AccountRepeatedInAccountAmounts);
+        }
+        for (id, amount) in &resolved {
+            if *amount < 0 && self.balance_of(*id).0 < amount.unsigned_abs() {
+                return Err(Status::InsufficientAccountBalance);
+            }
+        }
+
+        for (id, amount) in resolved {
+            self.adjust(id, amount);
+            record.transfers.push(Transfer {
+                account: id,
+                amount,
+            });
+        }
+        for (address, amount) in created {
+            let id = self.allocate_id();
+            self.insert_account(Account {
+                id,
+                key: None,
+                alias: Some(address),
+                balance: Tinybar(amount.unsigned_abs()),
+                nonce: 0,
+                deleted: false,
+                memo: String::new(),
+                created_at: consensus,
+                private_key_hex: None,
+            });
+            record.transfers.push(Transfer {
+                account: id,
+                amount,
+            });
+        }
+        Ok(())
+    }
+
+    /// Balance in tinybar; zero for an id with no account.
+    fn balance_of(&self, id: EntityId) -> Tinybar {
+        self.accounts.get(&id).map_or(Tinybar(0), |a| a.balance)
+    }
+
+    /// Whether the id names an account that exists and was not deleted.
+    fn is_live(&self, id: EntityId) -> bool {
+        self.accounts.get(&id).is_some_and(|a| !a.deleted)
+    }
+
+    /// Add a signed tinybar amount to an account that is known to exist.
+    fn adjust(&mut self, id: EntityId, amount: i64) {
+        if let Some(account) = self.accounts.get_mut(&id) {
+            account.balance = if amount < 0 {
+                Tinybar(account.balance.0.saturating_sub(amount.unsigned_abs()))
+            } else {
+                Tinybar(account.balance.0.saturating_add(amount.unsigned_abs()))
+            };
+        }
+    }
+
+    /// Move tinybar between two existing accounts and append both legs to a transfer list.
+    fn move_tinybar(
+        &mut self,
+        from: EntityId,
+        to: EntityId,
+        amount: Tinybar,
+        transfers: &mut Vec<Transfer>,
+    ) {
+        if amount.0 == 0 {
+            return;
+        }
+        let signed = amount.0 as i64;
+        self.adjust(from, -signed);
+        self.adjust(to, signed);
+        transfers.push(Transfer {
+            account: from,
+            amount: -signed,
+        });
+        transfers.push(Transfer {
+            account: to,
+            amount: signed,
+        });
+    }
+
     // ---- cheats ------------------------------------------------------------------------------
 
     /// `evm_snapshot`: clone the whole chain under a fresh id.
@@ -859,6 +1197,19 @@ impl Chain {
     pub fn stop_impersonating(&mut self, address: Address) {
         self.impersonated.remove(&address);
     }
+}
+
+/// One entry per account, in id order: the mirror lists a transaction's transfers that way, and
+/// the fee leg and a body leg can name the same account.
+fn aggregate(transfers: Vec<Transfer>) -> Vec<Transfer> {
+    let mut totals: BTreeMap<EntityId, i64> = BTreeMap::new();
+    for transfer in transfers {
+        *totals.entry(transfer.account).or_default() += transfer.amount;
+    }
+    totals
+        .into_iter()
+        .map(|(account, amount)| Transfer { account, amount })
+        .collect()
 }
 
 fn system_account(
