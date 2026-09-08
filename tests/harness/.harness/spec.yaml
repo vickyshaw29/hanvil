@@ -1,0 +1,21 @@
+# The smallest recipe that exercises hedera-harness's CHAIN tier. `network: local` is the mode
+# added by the PR to hedera-dev/hedera-harness; it needs no operator block and no credentials,
+# so this runs in CI with no secrets. The generator is a fixed command rather than an agent:
+# this job proves the chain tier reaches Hanvil, not that an agent can write code.
+schemaVersion: 3
+name: chain-on-hanvil
+generator:
+  provider: command
+  command: bash
+  args: ["-c", "printf 'ok\\n' > generated.txt"]
+prd: .harness/prd.md
+requiredFiles:
+  - generated.txt
+chainValidation:
+  enabled: true
+  network: local
+baseline:
+  commands:
+    # The loader requires a command literally named `install`; it fingerprints the host on it.
+    - name: install
+      command: "true"

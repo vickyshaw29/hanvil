@@ -1,0 +1,6 @@
+{
+  "name": "chain-on-hanvil",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Fixture project for the hedera-harness CHAIN tier running against hanvil"
+}

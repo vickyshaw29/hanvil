@@ -43,3 +43,106 @@ jobs:
             echo "boot $((e-s)) ms"; echo $((e-s)) >> times.txt
           done
           med=$(sort -n times.txt | sed -n 3p); echo "median $med ms"; test "$med" -le 100
+
+  # The demonstration: hedera-harness's on-chain validation tier running against Hanvil with no
+  # secrets. `network: local` is the mode added by the PR to hedera-dev/hedera-harness; until it
+  # merges, the harness is built from the branch that carries it.
+  harness:
+    name: hedera-harness CHAIN tier on hanvil (no secrets)
+    runs-on: ubuntu-latest
+    env:
+      HARNESS_REPO: vickyshaw29/hedera-harness
+      HARNESS_REF: feat/local-network
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: "Build the harness from the branch that adds network: local"
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.HARNESS_REPO }}
+          ref: ${{ env.HARNESS_REF }}
+          path: harness
+      - name: npm ci and build
+        working-directory: harness
+        run: |
+          npm ci
+          npm run build
+
+      - name: Lay out the fixture project
+        run: |
+          cp -R tests/harness "$RUNNER_TEMP/project"
+          cd "$RUNNER_TEMP/project"
+          git init -q -b main .
+          git -c user.email=ci@hanvil -c user.name=CI add -A
+          git -c user.email=ci@hanvil -c user.name=CI commit -q --no-gpg-sign -m "fixture"
+
+      - name: Start hanvil
+        run: |
+          ./target/release/hanvil > "$RUNNER_TEMP/hanvil.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/hanvil.pid"
+          for _ in $(seq 1 200); do
+            grep -q "Started in" "$RUNNER_TEMP/hanvil.log" && break
+            sleep 0.05
+          done
+          grep -q "Started in" "$RUNNER_TEMP/hanvil.log" || { cat "$RUNNER_TEMP/hanvil.log"; exit 1; }
+          head -4 "$RUNNER_TEMP/hanvil.log"
+
+      # No credentials are set anywhere in this job. If the harness ever needs them again, this
+      # step is what fails first, and it fails before anything has been built.
+      - name: hedera-harness doctor
+        working-directory: ${{ runner.temp }}/project
+        run: node "$GITHUB_WORKSPACE/harness/dist/index.js" doctor .harness/spec.yaml
+
+      - name: hedera-harness run
+        working-directory: ${{ runner.temp }}/project
+        run: node "$GITHUB_WORKSPACE/harness/dist/index.js" run .harness/spec.yaml
+
+      # The verdict alone would pass if CHAIN had silently done nothing. These assert the run
+      # actually provisioned a signer on the local network and swept it afterwards.
+      - name: Assert the chain tier ran against the local network
+        working-directory: ${{ runner.temp }}/project
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, sys, urllib.request
+
+          events = [
+              json.loads(line)
+              for line in pathlib.Path(".harness/runs/harness.log.jsonl").read_text().splitlines()
+              if line.strip()
+          ]
+          provisioned = [e for e in events if e["type"] == "chain_signer_provisioned"]
+          swept = [e for e in events if e["type"] == "chain_signer_swept"]
+          assert provisioned, "no chain_signer_provisioned event"
+          assert provisioned[-1]["network"] == "local", provisioned[-1]
+          assert swept and swept[-1]["success"], swept
+
+          account = provisioned[-1]["accountId"]
+          report = json.loads(
+              sorted(pathlib.Path(".harness/runs").glob("*/reports/report.json"))[-1].read_text()
+          )
+          assert report["passed"], report
+
+          # The mirror is the keyless ground truth: the signer was created and then deleted.
+          with urllib.request.urlopen(f"http://localhost:5551/api/v1/accounts/{account}") as r:
+              seen = json.load(r)
+          assert seen["deleted"] is True, seen
+          print(f"CHAIN ran on network=local: {account} provisioned, swept, deleted on the mirror")
+          PY
+
+      - name: Stop hanvil
+        if: always()
+        run: kill "$(cat "$RUNNER_TEMP/hanvil.pid")" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: harness-run
+          path: |
+            ${{ runner.temp }}/project/.harness/runs
+            ${{ runner.temp }}/hanvil.log

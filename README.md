@@ -108,9 +108,43 @@ Not emulated. Each of these is a deliberate hole, not an oversight:
 
 ## Harness integration
 
-Two PRs against `hedera-dev/hedera-harness` `dev` make its Tier 3.5 chain validation run here:
-`network: "local"` for the signer and the validator prompt, and a snapshot per repair attempt so
-retries do not inherit the previous attempt's on-chain state. Neither is open yet.
+`hedera-harness` runs its on-chain validation tier against Hanvil with no credentials. Measured
+2026-09-08, five runs, 3.6-4.3 s wall clock:
+
+```
+[hedera-harness] Chain signer provisioned - 0.0.1033 (0x61a73ab7...)
+[hedera-harness] Attempt 1 PASSED - deterministic gates passed
+[hedera-harness] Chain signer swept - 0.0.1033
+Run PASSED
+```
+
+The recipe is four lines and names no operator:
+
+```yaml
+chainValidation:
+  enabled: true
+  network: local
+```
+
+Nothing is set in the environment - no `HEDERA_OPERATOR_ID`, no `HEDERA_OPERATOR_KEY`. The run
+artifacts carry `{"type":"chain_signer_provisioned","network":"local"}` and
+`{"type":"chain_signer_swept","success":true}`, and `GET /api/v1/accounts/0.0.1033` on the mirror
+shows the account created and then deleted. To reproduce, with the harness branch below built:
+
+```
+./target/release/hanvil &
+cp -R tests/harness /tmp/project && cd /tmp/project && git init -q -b main . && git add -A && git commit -qm fixture
+node <harness>/dist/index.js doctor .harness/spec.yaml
+node <harness>/dist/index.js run   .harness/spec.yaml
+```
+
+`.github/workflows/ci.yml` runs exactly that on every push, with no secrets, and asserts the
+signer reached `network: local` rather than trusting the verdict.
+
+`network: "local"` is not in `hedera-harness` yet. It is one of two PRs against
+`hedera-dev/hedera-harness` `dev`: this one, and a snapshot per repair attempt so retries do not
+inherit the previous attempt's on-chain state. Neither is open yet; the CI job builds the harness
+from the branch that carries the first.
 
 ## How it is built
 

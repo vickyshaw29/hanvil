@@ -2,6 +2,8 @@ research/
 target/
 node_modules/
 .harness/
+# The CI fixture is a checked-in harness project; it is the only .harness/ that belongs in git.
+!tests/harness/.harness/
 *.log
 plan.md
 private/
