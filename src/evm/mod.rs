@@ -239,6 +239,42 @@ fn rejection(error: EVMError<Infallible>, expected_chain: u64, base_fee: u64) ->
     }
 }
 
+/// Runtime bytecode that always reverts with `Error(string)` carrying `reason`.
+///
+/// Etched at an address a caller expects to be a contract, so the call fails loudly and every
+/// client decodes the reason — viem and ethers read `Error(string)`, and so does
+/// [`revert_reason`]. Hedera's system contracts are not emulated, and returning success with
+/// empty data (what an empty address does) would let a caller believe an HTS call worked.
+pub fn revert_stub(reason: &str) -> alloy_primitives::Bytes {
+    // Error(string): selector ‖ offset ‖ length ‖ utf-8 padded to a 32-byte boundary.
+    let mut data = vec![0x08, 0xc3, 0x79, 0xa0];
+    data.extend_from_slice(&U256::from(32).to_be_bytes::<32>());
+    data.extend_from_slice(&U256::from(reason.len()).to_be_bytes::<32>());
+    data.extend_from_slice(reason.as_bytes());
+    while (data.len() - 4) % 32 != 0 {
+        data.push(0);
+    }
+
+    // CODECOPY(dest=0, offset=DATA_OFFSET, len) then REVERT(0, len). Both pop their arguments
+    // top-first, so each is pushed in reverse.
+    const DATA_OFFSET: u16 = 15;
+    let len = data.len() as u16;
+    let mut code = Vec::with_capacity(DATA_OFFSET as usize + data.len());
+    code.push(0x61); // PUSH2 len
+    code.extend_from_slice(&len.to_be_bytes());
+    code.push(0x61); // PUSH2 DATA_OFFSET
+    code.extend_from_slice(&DATA_OFFSET.to_be_bytes());
+    code.extend_from_slice(&[0x60, 0x00]); // PUSH1 0
+    code.push(0x39); // CODECOPY
+    code.push(0x61); // PUSH2 len
+    code.extend_from_slice(&len.to_be_bytes());
+    code.extend_from_slice(&[0x60, 0x00]); // PUSH1 0
+    code.push(0xfd); // REVERT
+    debug_assert_eq!(code.len(), DATA_OFFSET as usize);
+    code.extend_from_slice(&data);
+    code.into()
+}
+
 /// Human-readable reason from revert data: `Error(string)` and `Panic(uint256)`.
 pub fn revert_reason(data: &[u8]) -> Option<String> {
     const ERROR_SELECTOR: [u8; 4] = [0x08, 0xc3, 0x79, 0xa0];

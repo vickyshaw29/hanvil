@@ -292,3 +292,30 @@ fn receipts_carry_the_relay_field_set_on_success_and_on_revert() {
         );
     }
 }
+
+/// An address with no code answers a call with success and empty data, so an unemulated HTS call
+/// would read as having worked. Genesis etches a reverting stub at `0x…0167` instead.
+#[test]
+fn hts_system_contract_reverts_with_a_decodable_reason() {
+    let node = Node::boot();
+    let error = node.error(
+        "eth_call",
+        json!([{
+            "to": "0x0000000000000000000000000000000000000167",
+            "data": format!("0x{}", hex::encode(selector("createFungibleToken()"))),
+        }, "latest"]),
+    );
+    assert_eq!(
+        error["code"],
+        json!(3),
+        "geth revert shape, so viem decodes it"
+    );
+    assert_eq!(
+        error["message"],
+        json!("execution reverted: hanvil: HTS system contract not emulated; see README#hts")
+    );
+    assert!(
+        error["data"].as_str().unwrap().starts_with("0x08c379a0"),
+        "Error(string) selector"
+    );
+}

@@ -83,6 +83,12 @@ pub const TREASURY: EntityId = EntityId(2);
 pub const NODE: EntityId = EntityId(3);
 /// Fee collection account; EVM fees land here.
 pub const FEE_COLLECTOR: EntityId = EntityId(98);
+/// Hedera's HTS system contract, `0.0.359` — long-zero address `0x…0167`. Hanvil does not
+/// emulate it; genesis etches bytecode there that reverts, so a token call fails loudly instead
+/// of reading as a success with empty return data.
+pub const HTS_SYSTEM_CONTRACT: EntityId = EntityId(359);
+/// What a call to [`HTS_SYSTEM_CONTRACT`] reverts with.
+pub const HTS_NOT_EMULATED: &str = "hanvil: HTS system contract not emulated; see README#hts";
 /// Block gas limit reported to clients. Hedera's per-transaction cap is 15M; a block holds two.
 pub const BLOCK_GAS_LIMIT: u64 = 30_000_000;
 /// Fee charged for every HAPI transaction, whatever the body. Hanvil does not emulate Hedera's
@@ -175,6 +181,10 @@ impl Chain {
             chain.insert_account(account);
         }
         chain.next_id = chain.next_id.max(FIRST_USER_ID);
+        chain.etch(
+            long_zero_address(HTS_SYSTEM_CONTRACT),
+            evm::revert_stub(HTS_NOT_EMULATED),
+        );
         let genesis_hash = keccak256(format!("hanvil genesis chain {}", genesis.chain_id));
         chain.blocks.push(Block {
             number: 0,
@@ -1170,6 +1180,19 @@ impl Chain {
         });
     }
 
+    /// Write bytecode at an address without registering a contract entity. Used for the system
+    /// contracts, which already have entity ids of their own.
+    fn etch(&mut self, address: Address, code: Bytes) {
+        let bytecode = Bytecode::new_raw(code);
+        let slot = self.db_account(address);
+        slot.info = AccountInfo {
+            balance: slot.info.balance,
+            nonce: slot.info.nonce,
+            ..AccountInfo::default()
+        }
+        .with_code(bytecode);
+    }
+
     /// `anvil_setCode`. Registers a contract entity when the address had no code.
     pub fn set_code(&mut self, address: Address, code: Bytes) {
         let bytecode = Bytecode::new_raw(code);
@@ -1318,6 +1341,32 @@ mod tests {
             now: Timestamp::from_secs(1_700_000_000),
         })
         .expect("genesis")
+    }
+
+    /// An HTS call must fail loudly. Before genesis etched a stub there, `0x…0167` was an empty
+    /// address, and the EVM answers a call to one with success and no return data — a token
+    /// operation would read as having worked.
+    #[test]
+    fn a_call_to_the_hts_system_contract_reverts_with_a_reason() {
+        let mut c = chain();
+        // `createFungibleToken(...)` — any selector; the stub reverts before reading calldata.
+        let request = CallRequest {
+            to: Some(long_zero_address(HTS_SYSTEM_CONTRACT)),
+            input: Bytes::from_static(&[0x27, 0x8e, 0x0e, 0x45]),
+            gas: Some(100_000),
+            ..CallRequest::default()
+        };
+        let result = c
+            .call(&request, Timestamp::from_secs(1_700_000_000))
+            .expect("the call executes");
+        let ExecutionResult::Revert { output, .. } = result else {
+            panic!("expected a revert, got {result:?}");
+        };
+        assert_eq!(
+            evm::revert_reason(&output).as_deref(),
+            Some(HTS_NOT_EMULATED),
+            "the reason has to decode as Error(string) so viem and ethers show it"
+        );
     }
 
     #[test]

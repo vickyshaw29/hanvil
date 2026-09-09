@@ -90,6 +90,7 @@ Not emulated. Each of these is a deliberate hole, not an oversight:
 - The alias key's signature on `cryptoCreateAccount`, and `receiverSigRequired`. The payer's
   signature is what a create is checked against.
 - HTS, HFS, scheduled transactions, token and NFT data. `/accounts/{id}/tokens` is always empty.
+  A call to the HTS system contract reverts rather than pretending — see [HTS](#hts) below.
 - Chunked topic messages keep no chunk metadata: each chunk is stored as its own message, and
   the mirror's `chunk_info` is null.
 - `AccountInfo.alias` over HAPI is empty for the same reason the mirror's is null; the EVM
@@ -105,6 +106,26 @@ Not emulated. Each of these is a deliberate hole, not an oversight:
   by an inner call is not itemised.
 - The exchange rate is fixed at 1 ℏ = 12 ¢ and never expires.
 - Key lists and threshold keys. Accounts hold one key.
+
+### HTS
+
+Hedera's token service lives at the system contract `0.0.359`, long-zero address
+`0x0000000000000000000000000000000000000167`. Hanvil does not emulate it.
+
+An address with no code is not an error in the EVM: a call to one succeeds and returns nothing.
+A contract that calls `createFungibleToken` on an unemulated chain would therefore read the call
+as having worked and carry on with a token that does not exist. So genesis etches bytecode at
+`0x…0167` that reverts with `Error(string)`:
+
+```
+hanvil: HTS system contract not emulated; see README#hts
+```
+
+viem, ethers and `cast` all decode that, and `eth_call` returns it as `{"code": 3, "data": "0x08c379a0…"}`.
+`anvil_setCode` overwrites it if you want to put a mock there.
+
+Etched bytecode, not a precompile: the behaviour a caller sees is identical, and it survives
+`evm_snapshot` / `evm_revert` because it is part of the chain state that gets cloned.
 
 ## Harness integration
 

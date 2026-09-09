@@ -216,8 +216,12 @@ tonic services: `CryptoService`, `ConsensusService`, `SmartContractService` (onl
 
 ## 10. HTS system contract (`0x167`)
 
-v0: a precompile at `0x167` that reverts with `"hanvil: HTS system contract not emulated; see
-README#hts"`, so a call fails loudly instead of silently succeeding. scaffold's default deploy
+v0, done 2026-09-09: **etched bytecode**, not a precompile — genesis writes a stub at `0x167`
+that reverts with `Error(string)` carrying `"hanvil: HTS system contract not emulated; see
+README#hts"`, so a call fails loudly instead of silently succeeding. Etching rather than a
+precompile because `MainnetEvm` fixes the provider type to `EthPrecompiles`; a custom
+`PrecompileProvider` means reconstructing `Evm` around new generics for no observable difference,
+and etched code is part of the state a snapshot clones. scaffold's default deploy
 skips HTS on any network not named `hardhat`/`localhost` (`research.md §7`); recipes name the
 network `hanvil`. Stretch (only after G3): etch `hedera-forking`'s `HtsSystemContract` at `0x167`
 and a revm inspector that etches the HIP-719 proxy at each address `createFungibleToken` returns.
