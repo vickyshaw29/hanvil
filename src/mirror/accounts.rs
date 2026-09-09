@@ -48,6 +48,46 @@ pub async fn tokens(State(chain): State<Shared>, Path(id): Path<String>, params:
     Ok(Json(json!({ "tokens": [], "links": shapes::links() })))
 }
 
+/// `GET /api/v1/balances` — `openapi.yml:391`, `BalancesResponse` at `openapi.yml:1575`.
+///
+/// `@hiero-ledger/sdk`'s `MirrorNodeAccountBalanceQuery` — the documented replacement for the
+/// deprecated `AccountBalanceQuery` — reads this path and nothing else
+/// (`hiero-sdk-js/src/query/MirrorNodeAccountBalanceQuery.js:119`). It reads an empty `balances`
+/// array as "no such account", so an account that exists with nothing in it still gets an entry.
+pub async fn balances(State(chain): State<Shared>, params: Params) -> Answer {
+    params.only(&["account.id", "limit", "order"])?;
+    let limit = params.limit()?;
+    let order = params.order(Order::Desc)?;
+    let wanted = match params.get("account.id") {
+        None => None,
+        Some(text) => Some(shapes::parse_reference(text, "account.id")?),
+    };
+
+    let chain = chain.read();
+    let matched: Vec<Value> = match &wanted {
+        Some(reference) => resolve(&chain, reference)
+            .into_iter()
+            .map(balance)
+            .collect(),
+        None => chain.accounts().map(balance).collect(),
+    };
+    Ok(Json(json!({
+        "timestamp": timestamp(chain.latest_block().consensus_timestamp).as_str(),
+        "balances": page(matched, order, limit),
+        "links": shapes::links(),
+    })))
+}
+
+/// `openapi.yml:2126` AccountBalance: `account`, `balance` and `tokens` are all required. The
+/// token list is empty for the reason `/accounts/{id}/tokens` is.
+fn balance(account: &Account) -> Value {
+    json!({
+        "account": account.id.to_string(),
+        "balance": account.balance.0,
+        "tokens": [],
+    })
+}
+
 fn resolve<'a>(chain: &'a Chain, reference: &Reference) -> Option<&'a Account> {
     match reference {
         Reference::Entity(id) => chain.account(*id),

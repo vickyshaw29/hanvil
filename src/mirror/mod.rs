@@ -223,6 +223,7 @@ pub async fn serve(chain: Shared, host: &str, port: u16) -> std::io::Result<Boun
     let router = Router::new()
         .route("/api/v1/accounts/{id}", get(accounts::get))
         .route("/api/v1/accounts/{id}/tokens", get(accounts::tokens))
+        .route("/api/v1/balances", get(accounts::balances))
         .route("/api/v1/transactions", get(transactions::list))
         .route("/api/v1/transactions/{id}", get(transactions::by_id))
         .route("/api/v1/contracts/results/logs", get(contracts::logs))

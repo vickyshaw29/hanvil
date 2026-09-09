@@ -411,3 +411,28 @@ fn a_filter_hanvil_does_not_apply_is_refused_rather_than_ignored() {
     }
     node.shutdown();
 }
+
+/// `@hiero-ledger/sdk`'s `MirrorNodeAccountBalanceQuery` — the documented replacement for the
+/// deprecated `AccountBalanceQuery` — reads this path and no other, and reads an empty `balances`
+/// array as "no such account". Hanvil did not route it, so the query 404'd.
+#[test]
+fn balances_answers_the_path_the_sdk_reads() {
+    let node = Node::boot();
+    let (status, one) = node.get("/api/v1/balances?account.id=0.0.1012");
+    assert_eq!(status, 200);
+    assert_eq!(one["balances"].as_array().unwrap().len(), 1);
+    assert_eq!(one["balances"][0]["account"], json!("0.0.1012"));
+    assert_eq!(one["balances"][0]["balance"], json!(1_000_000_000_000u64));
+    assert_eq!(one["balances"][0]["tokens"], json!([]));
+
+    let (status, unknown) = node.get("/api/v1/balances?account.id=0.0.999999");
+    assert_eq!(
+        status, 200,
+        "an unknown account is an empty list, not a 404"
+    );
+    assert_eq!(unknown["balances"], json!([]));
+
+    let (_, all) = node.get("/api/v1/balances?limit=3&order=asc");
+    assert_eq!(all["balances"].as_array().unwrap().len(), 3);
+    node.shutdown();
+}

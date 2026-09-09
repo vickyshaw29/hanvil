@@ -329,6 +329,11 @@ impl Chain {
         self.accounts.get(&id)
     }
 
+    /// Every account, in id order. `/api/v1/balances` lists them.
+    pub fn accounts(&self) -> impl Iterator<Item = &Account> {
+        self.accounts.values()
+    }
+
     /// Entity id behind an EVM address, account or contract.
     pub fn entity_by_evm(&self, address: &Address) -> Option<EntityId> {
         self.by_evm
