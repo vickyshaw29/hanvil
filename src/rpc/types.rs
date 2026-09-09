@@ -188,6 +188,25 @@ pub fn parse_optional_nonce(param: Option<&Value>) -> Result<Option<u64>, RpcErr
     }
 }
 
+/// Whether a filter object pins its `toBlock` to a fixed block.
+///
+/// `parse_log_filter` resolves an absent or `latest` `toBlock` to the head, which is what
+/// `eth_getLogs` wants and the opposite of what a standing `eth_newFilter` wants: a filter pinned
+/// to the head at install time would never report a log again. A filter that names a number or
+/// `earliest` means what it says and stops there.
+pub fn to_block_is_pinned(param: Option<&Value>) -> bool {
+    match param
+        .and_then(Value::as_object)
+        .and_then(|o| o.get("toBlock"))
+    {
+        None | Some(Value::Null) => false,
+        Some(Value::String(tag)) => {
+            !matches!(tag.as_str(), "latest" | "pending" | "safe" | "finalized")
+        }
+        Some(_) => true,
+    }
+}
+
 /// `eth_getLogs` filter object.
 pub fn parse_log_filter(chain: &Chain, param: Option<&Value>) -> Result<LogFilter, RpcError> {
     let object = param

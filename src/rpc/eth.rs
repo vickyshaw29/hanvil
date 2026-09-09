@@ -8,15 +8,21 @@ use super::RpcError;
 use super::types::{
     block_json, data, hash, log_json, parse_address, parse_block_number, parse_bytes, parse_call,
     parse_hash, parse_log_filter, parse_optional_nonce, parse_quantity, parse_u64, quantity_u64,
-    receipt_json, tx_json, weibar, weibar_u64,
+    receipt_json, to_block_is_pinned, tx_json, weibar, weibar_u64,
 };
 use crate::evm;
-use crate::state::{BLOCK_GAS_LIMIT, Chain, Timestamp, UnsignedTx};
+use crate::state::{BLOCK_GAS_LIMIT, Chain, FilterChanges, Timestamp, UnsignedTx};
 
 /// Methods the relay lists but answers with -32601. Kept identical so tooling that probes
 /// capabilities sees the same surface it would on a real relay.
 const UNSUPPORTED: &[&str] = &[
     "eth_blobBaseFee",
+    // The relay's own summary for it: "Always returns UNSUPPORTED_METHOD error"
+    // (`openrpc.json`, method `net_peerCount`).
+    "net_peerCount",
+    // Hanvil mines one block per transaction, so nothing is ever pending. The relay declares this
+    // method unsupported too (`openrpc.json:950-957`).
+    "eth_newPendingTransactionFilter",
     "eth_coinbase",
     "eth_createAccessList",
     "eth_getProof",
@@ -43,7 +49,6 @@ pub fn call(
         "eth_chainId" => Ok(json!(quantity_u64(chain.chain_id()))),
         "net_version" => Ok(json!(chain.chain_id().to_string())),
         "net_listening" => Ok(json!(true)),
-        "net_peerCount" => Ok(json!("0x0")),
         "web3_clientVersion" => Ok(json!(format!("hanvil/{}", env!("CARGO_PKG_VERSION")))),
         "web3_sha3" => Ok(json!(hash(&keccak256(parse_bytes(p(0), "data")?)))),
         "eth_blockNumber" => Ok(json!(quantity_u64(chain.block_number()))),
@@ -54,6 +59,7 @@ pub fn call(
         "eth_mining" => Ok(json!(false)),
         "eth_syncing" => Ok(json!(false)),
         "eth_hashrate" => Ok(json!("0x0")),
+        "eth_submitWork" => Ok(json!(false)),
         "eth_getUncleByBlockHashAndIndex" | "eth_getUncleByBlockNumberAndIndex" => Ok(Value::Null),
         "eth_getUncleCountByBlockHash" | "eth_getUncleCountByBlockNumber" => Ok(json!("0x0")),
 
@@ -160,6 +166,34 @@ pub fn call(
             let filter = parse_log_filter(chain, p(0))?;
             Ok(Value::Array(
                 chain.logs(&filter).into_iter().map(log_json).collect(),
+            ))
+        }
+
+        "eth_newFilter" => {
+            let mut query = parse_log_filter(chain, p(0))?;
+            if !to_block_is_pinned(p(0)) {
+                query.to_block = u64::MAX;
+            }
+            Ok(json!(quantity_u64(chain.install_log_filter(query))))
+        }
+        "eth_newBlockFilter" => Ok(json!(quantity_u64(chain.install_block_filter()))),
+        "eth_uninstallFilter" => {
+            let id = parse_u64(p(0), "filter id")?;
+            Ok(json!(chain.uninstall_filter(id)))
+        }
+        "eth_getFilterChanges" => {
+            let id = parse_u64(p(0), "filter id")?;
+            Ok(match chain.filter_changes(id)? {
+                FilterChanges::Logs(logs) => Value::Array(logs.iter().map(log_json).collect()),
+                FilterChanges::Blocks(hashes) => {
+                    Value::Array(hashes.iter().map(|h| json!(hash(h))).collect())
+                }
+            })
+        }
+        "eth_getFilterLogs" => {
+            let id = parse_u64(p(0), "filter id")?;
+            Ok(Value::Array(
+                chain.filter_logs(id)?.into_iter().map(log_json).collect(),
             ))
         }
 

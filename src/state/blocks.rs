@@ -139,7 +139,7 @@ pub struct StoredLog {
 }
 
 /// `eth_getLogs` filter after parsing.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct LogFilter {
     /// First block, inclusive.
     pub from_block: u64,
@@ -186,3 +186,33 @@ pub struct CallRequest {
 
 /// Storage slot key, kept as the 256-bit value clients send.
 pub type Slot = U256;
+
+/// An installed filter, polled with `eth_getFilterChanges`. The relay serves the filter family
+/// over plain HTTP (`openrpc.json:885-1005`), which is what `ethers`' `contract.on(...)` and
+/// `viem`'s `createEventFilter` use when there is no WebSocket; each filter carries the block its
+/// last poll stopped at, because a poll returns only what arrived since.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Filter {
+    /// `eth_newFilter`: logs matching a query.
+    Logs {
+        /// What to match. Its `to_block` bounds the watch; `from_block` seeds the first poll.
+        query: LogFilter,
+        /// First block the next poll reads.
+        next_block: u64,
+    },
+    /// `eth_newBlockFilter`: the hash of every block mined since the last poll.
+    Blocks {
+        /// First block the next poll reads.
+        next_block: u64,
+    },
+}
+
+/// What one poll of a filter found. A log filter and a block filter answer different shapes on
+/// the same method, which is why `eth_getFilterChanges` cannot simply return an array of one type.
+#[derive(Debug)]
+pub enum FilterChanges {
+    /// From a filter installed by `eth_newFilter`.
+    Logs(Vec<StoredLog>),
+    /// From a filter installed by `eth_newBlockFilter`.
+    Blocks(Vec<B256>),
+}

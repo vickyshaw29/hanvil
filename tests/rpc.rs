@@ -451,3 +451,98 @@ fn a_gas_limit_over_the_network_maximum_is_refused_and_a_call_is_capped() {
     let block = node.result("eth_getBlockByNumber", json!(["latest", false]));
     assert_eq!(block["gasLimit"], json!("0xe4e1c0"));
 }
+
+/// `ethers`' `contract.on(...)` and `viem`'s `createEventFilter` poll this family over plain HTTP
+/// when there is no WebSocket, and the relay serves it (`openrpc.json:885-1005`). A filter reports
+/// only what arrived since the last poll, so the second poll of a quiet chain is empty.
+#[test]
+fn a_log_filter_reports_each_event_once() {
+    let node = Node::boot();
+    let fixture = counter_fixture();
+    let init_code = hex::decode(
+        fixture["bytecode"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("0x"),
+    )
+    .expect("fixture bytecode is hex");
+    let receipt = send(&node, None, init_code, 0);
+    let contract: Address = receipt["contractAddress"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    // No toBlock, so the filter follows the head rather than pinning to it.
+    let id = node.result(
+        "eth_newFilter",
+        json!([{ "address": format!("{contract:#x}") }]),
+    );
+    assert_eq!(
+        node.result("eth_getFilterChanges", json!([id])),
+        json!([]),
+        "nothing has happened yet"
+    );
+
+    send(&node, Some(contract), selector("increment()").to_vec(), 0);
+    let changes = node.result("eth_getFilterChanges", json!([id]));
+    assert_eq!(changes.as_array().unwrap().len(), 1, "one Incremented log");
+    assert_eq!(
+        changes[0]["topics"][0],
+        json!(format!("{:#x}", keccak256("Incremented(address,uint256)")))
+    );
+    assert_eq!(
+        node.result("eth_getFilterChanges", json!([id])),
+        json!([]),
+        "a poll drains what it read; the same log must not arrive twice"
+    );
+
+    // eth_getFilterLogs ignores the cursor and re-reads everything the filter matches.
+    assert_eq!(
+        node.result("eth_getFilterLogs", json!([id]))
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    assert_eq!(node.result("eth_uninstallFilter", json!([id])), json!(true));
+    assert_eq!(
+        node.result("eth_uninstallFilter", json!([id])),
+        json!(false),
+        "uninstalling twice is false, not an error"
+    );
+    assert_eq!(
+        node.error("eth_getFilterChanges", json!([id]))["code"],
+        json!(-32000),
+        "polling a filter that is gone is an error, not an empty array"
+    );
+    node.shutdown();
+}
+
+/// `anvil_mine(blocks, interval)` spaces the blocks. Accepting the interval and mining
+/// back-to-back looked like it worked and produced a chain where no time had passed.
+#[test]
+fn anvil_mine_spaces_blocks_by_its_interval() {
+    let node = Node::boot();
+    node.result("anvil_mine", json!(["0x3", "0x1e"]));
+    assert_eq!(node.result("eth_blockNumber", json!([])), json!("0x3"));
+    let first = hex_u64(&node.result("eth_getBlockByNumber", json!(["0x1", false]))["timestamp"]);
+    let last = hex_u64(&node.result("eth_getBlockByNumber", json!(["0x3", false]))["timestamp"]);
+    assert_eq!(last - first, 60, "two 30-second gaps between three blocks");
+    node.shutdown();
+}
+
+/// The relay answers these two the way this asserts, and Hanvil answered both differently: a
+/// success where the relay errors, and an error where the relay answers.
+#[test]
+fn net_peer_count_and_submit_work_match_the_relay() {
+    let node = Node::boot();
+    assert_eq!(
+        node.error("net_peerCount", json!([]))["code"],
+        json!(-32601),
+        "the relay's summary for net_peerCount is `Always returns UNSUPPORTED_METHOD error`"
+    );
+    assert_eq!(node.result("eth_submitWork", json!([])), json!(false));
+    node.shutdown();
+}

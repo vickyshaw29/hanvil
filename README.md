@@ -16,8 +16,8 @@ On an M-series Mac, 2026-09-09, release build, median of five runs:
 | | hanvil | how it was measured |
 | --- | --- | --- |
 | Boot to listeners bound | 1 ms | the binary prints `Started in 1 ms` |
-| Resident memory | 4.2 MB | `ps -o rss= -p $(pgrep -x hanvil)` |
-| Binary | 7.1 MB | `ls -l target/release/hanvil` |
+| Resident memory | 4.3 MB | `ps -o rss= -p $(pgrep -x hanvil)` |
+| Binary | 7.3 MB | `ls -l target/release/hanvil` |
 | Accounts pre-funded | 30, 10,000 ℏ each | the boot banner |
 
 CI asserts the median boot stays under 100 ms on ubuntu and macos runners
@@ -70,7 +70,7 @@ arrive, so this makes time move, it does not batch.
 
 | Port | What | Surface |
 | --- | --- | --- |
-| 7546 | JSON-RPC, relay shape | `eth_chainId` `eth_blockNumber` `eth_getBalance` `eth_getCode` `eth_getStorageAt` `eth_getTransactionCount` `eth_gasPrice` `eth_maxPriorityFeePerGas` `eth_feeHistory` `eth_call` `eth_estimateGas` `eth_sendRawTransaction` `eth_sendTransaction` `eth_getTransactionByHash` `eth_getTransactionReceipt` `eth_getBlockBy{Number,Hash}` `eth_getBlockReceipts` `eth_getLogs` `eth_getBlockTransactionCountBy{Hash,Number}` `eth_getTransactionByBlock{Hash,Number}AndIndex` `net_version` `net_listening` `web3_clientVersion` `web3_sha3` |
+| 7546 | JSON-RPC, relay shape | `eth_chainId` `eth_blockNumber` `eth_getBalance` `eth_getCode` `eth_getStorageAt` `eth_getTransactionCount` `eth_gasPrice` `eth_maxPriorityFeePerGas` `eth_feeHistory` `eth_call` `eth_estimateGas` `eth_sendRawTransaction` `eth_sendTransaction` `eth_getTransactionByHash` `eth_getTransactionReceipt` `eth_getBlockBy{Number,Hash}` `eth_getBlockReceipts` `eth_getLogs` `eth_newFilter` `eth_newBlockFilter` `eth_getFilterChanges` `eth_getFilterLogs` `eth_uninstallFilter` `eth_getBlockTransactionCountBy{Hash,Number}` `eth_getTransactionByBlock{Hash,Number}AndIndex` `net_version` `net_listening` `web3_clientVersion` `web3_sha3` |
 | 7546 | Anvil cheats | `evm_snapshot` `evm_revert` `evm_mine` `evm_increaseTime` `evm_setNextBlockTimestamp` `anvil_setBalance` `anvil_setCode` `anvil_setNonce` `anvil_setStorageAt` `anvil_impersonateAccount` `anvil_stopImpersonatingAccount` `anvil_mine` `anvil_nodeInfo`, and the `hardhat_` aliases |
 | 5551 | Mirror node REST | `/api/v1/accounts/{id\|alias\|evm}` `/accounts/{id}/tokens` `/transactions` (`account.id` `transactiontype` `result` `timestamp` `limit` `order`) `/transactions/{0.0.x-sss-nnn}` `/contracts/{id\|address}` `/contracts/{id}/results` `/contracts/results/{hash\|txId}` `/contracts/results/logs` `/topics/{id}` `/topics/{id}/messages` `/topics/{id}/messages/{n}` `/blocks` `/blocks/{number\|hash}` `/network/nodes` `/network/fees` `/network/exchangerate` |
 | 50211 | HAPI gRPC | `CryptoService`: `createAccount` `cryptoTransfer` `cryptoDelete` `cryptoGetBalance` `getAccountInfo` `getTransactionReceipts` `getTxRecordByTxID`. `ConsensusService`: `createTopic` `submitMessage` `getTopicInfo`. `SmartContractService`: `callEthereum` `contractCallLocalMethod`. `NetworkService`: `getVersionInfo`. `FileService`, `TokenService`, `ScheduleService`, `FreezeService`, `UtilService` and `AddressBookService` are routed and answer `NOT_SUPPORTED` |
@@ -144,8 +144,10 @@ Not emulated. Each of these is a deliberate hole, not an oversight:
   there, so `TopicMessageQuery` finds nothing listening and retries twenty times before giving up.
   Read topic messages over REST — `GET /api/v1/topics/{id}/messages` — or point the SDK's mirror
   network at a real one.
-- The relay's WebSocket endpoint on port 8546. `eth_subscribe` and log watching over WS have
-  nothing to connect to; poll `eth_getLogs` instead.
+- The relay's WebSocket endpoint on port 8546. `eth_subscribe` has nothing to connect to. Watch
+  logs the way `ethers` and `viem` do without a socket: `eth_newFilter` then `eth_getFilterChanges`,
+  which Hanvil serves. `eth_newPendingTransactionFilter` is refused — one block is mined per
+  transaction, so nothing is ever pending.
 - Forking testnet or mainnet state. Hanvil starts from its own genesis every time and makes no
   outbound calls; `--state` replays a file Hanvil itself wrote.
 

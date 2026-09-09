@@ -20,7 +20,8 @@ use serde::{Deserialize, Serialize};
 
 pub use accounts::{Account, EntityId, Key};
 pub use blocks::{
-    Block, CallRequest, LogFilter, Receipt, Slot, StoredLog, TxBody, TxRecord, UnsignedTx,
+    Block, CallRequest, Filter, FilterChanges, LogFilter, Receipt, Slot, StoredLog, TxBody,
+    TxRecord, UnsignedTx,
 };
 pub use hapi::{
     AccountRef, Body, Digest384, Record, Status, Topic, TopicMessage, Transaction, Transfer, TxId,
@@ -74,6 +75,12 @@ pub enum Error {
     /// `eth_estimateGas` could not find a passing gas limit.
     #[error("execution fails at every gas limit up to {0}")]
     NoGasEstimate(u64),
+    /// A filter id that was never installed, or was uninstalled, or was dropped by `evm_revert`.
+    #[error("filter 0x{0:x} not found")]
+    NoSuchFilter(u64),
+    /// `eth_getFilterLogs` on a filter installed by `eth_newBlockFilter`.
+    #[error("filter 0x{0:x} watches blocks, not logs; poll it with eth_getFilterChanges")]
+    NotALogFilter(u64),
     /// A state file could not be read or written.
     #[error("chain state: {0}")]
     State(String),
@@ -170,6 +177,8 @@ pub struct Chain {
     hapi_by_id: HashMap<TxId, usize>,
     snapshots: BTreeMap<u64, Chain>,
     next_snapshot: u64,
+    filters: BTreeMap<u64, Filter>,
+    next_filter: u64,
 }
 
 impl Chain {
@@ -195,6 +204,8 @@ impl Chain {
             hapi_by_id: HashMap::new(),
             snapshots: BTreeMap::new(),
             next_snapshot: 0,
+            filters: BTreeMap::new(),
+            next_filter: 0,
         };
         let users =
             keys::predefined::accounts(genesis.accounts_per_type, genesis.balance, genesis.now)?;
@@ -412,6 +423,76 @@ impl Chain {
             .flat_map(|tx| tx.receipt.logs.iter())
             .filter(|log| filter.matches(log))
             .collect()
+    }
+
+    /// `eth_newFilter`. The id counts from 1: `0x0` is what a client reads as "no filter".
+    pub fn install_log_filter(&mut self, query: LogFilter) -> u64 {
+        let next_block = query.from_block;
+        self.install(Filter::Logs { query, next_block })
+    }
+
+    /// `eth_newBlockFilter`. The first poll reports blocks mined after the install, not the head.
+    pub fn install_block_filter(&mut self) -> u64 {
+        self.install(Filter::Blocks {
+            next_block: self.block_number() + 1,
+        })
+    }
+
+    fn install(&mut self, filter: Filter) -> u64 {
+        self.next_filter += 1;
+        let id = self.next_filter;
+        self.filters.insert(id, filter);
+        id
+    }
+
+    /// `eth_uninstallFilter`. `false` if the id was never installed or is already gone.
+    pub fn uninstall_filter(&mut self, id: u64) -> bool {
+        self.filters.remove(&id).is_some()
+    }
+
+    /// `eth_getFilterChanges`: what arrived since the last poll, and advance the cursor.
+    pub fn filter_changes(&mut self, id: u64) -> Result<FilterChanges, Error> {
+        let head = self.block_number();
+        let filter = self
+            .filters
+            .get(&id)
+            .ok_or(Error::NoSuchFilter(id))?
+            .clone();
+        let changes = match &filter {
+            Filter::Logs { query, next_block } => {
+                let mut query = query.clone();
+                query.from_block = *next_block;
+                query.to_block = query.to_block.min(head);
+                FilterChanges::Logs(self.logs(&query).into_iter().cloned().collect())
+            }
+            Filter::Blocks { next_block } => FilterChanges::Blocks(
+                (*next_block..=head)
+                    .filter_map(|n| self.block_by_number(n))
+                    .map(|b| b.hash)
+                    .collect(),
+            ),
+        };
+        let advanced = match filter {
+            Filter::Logs { query, .. } => Filter::Logs {
+                query,
+                next_block: head + 1,
+            },
+            Filter::Blocks { .. } => Filter::Blocks {
+                next_block: head + 1,
+            },
+        };
+        self.filters.insert(id, advanced);
+        Ok(changes)
+    }
+
+    /// `eth_getFilterLogs`: every log the filter matches, ignoring where the last poll stopped.
+    /// A block filter has no logs to give, and the relay's own schema types this as a log array,
+    /// so asking for one is an error rather than an empty answer.
+    pub fn filter_logs(&self, id: u64) -> Result<Vec<&StoredLog>, Error> {
+        match self.filters.get(&id).ok_or(Error::NoSuchFilter(id))? {
+            Filter::Logs { query, .. } => Ok(self.logs(query)),
+            Filter::Blocks { .. } => Err(Error::NotALogFilter(id)),
+        }
     }
 
     /// Accounts grouped for the boot banner, in id order within each group. Only the predefined

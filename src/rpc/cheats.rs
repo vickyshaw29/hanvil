@@ -31,11 +31,20 @@ pub fn call(
         "evm_snapshot" => Ok(json!(quantity_u64(chain.snapshot()))),
         "evm_revert" => Ok(json!(chain.revert(parse_u64(p(0), "snapshot id")?))),
         "evm_mine" | "anvil_mine" => {
-            let (count, pinned) = mine_params(&canonical, params)?;
+            let Mine {
+                count,
+                pinned,
+                interval,
+            } = mine_params(&canonical, params)?;
             if let Some(timestamp) = pinned {
                 chain.set_next_timestamp(timestamp)?;
             }
-            for _ in 0..count {
+            for block in 0..count {
+                // Anvil spaces the blocks by `interval` seconds; the first one keeps the time it
+                // would have had, so `anvil_mine(3, 30)` covers a minute, not a minute and a half.
+                if block > 0 {
+                    chain.increase_time(interval);
+                }
                 chain.mine_empty(now);
             }
             Ok(if canonical == "evm_mine" {
@@ -114,22 +123,45 @@ pub fn call(
     }
 }
 
+/// What one `evm_mine` or `anvil_mine` call asks for.
+struct Mine {
+    /// Blocks to mine.
+    count: u64,
+    /// A timestamp the next block is pinned to, from `evm_mine`.
+    pinned: Option<u64>,
+    /// Seconds between the blocks, from `anvil_mine`'s second argument.
+    interval: u64,
+}
+
 /// `evm_mine` takes an optional `{timestamp}` (or a bare timestamp); `anvil_mine` takes an
-/// optional block count and interval.
-fn mine_params(canonical: &str, params: &[Value]) -> Result<(u64, Option<u64>), RpcError> {
+/// optional block count and an optional interval in seconds between them.
+fn mine_params(canonical: &str, params: &[Value]) -> Result<Mine, RpcError> {
     if canonical == "anvil_mine" {
         let count = match params.first() {
             None | Some(Value::Null) => 1,
             some => parse_u64(some, "blocks")?,
         };
-        return Ok((count, None));
+        let interval = match params.get(1) {
+            None | Some(Value::Null) => 0,
+            some => parse_u64(some, "interval")?,
+        };
+        return Ok(Mine {
+            count,
+            pinned: None,
+            interval,
+        });
     }
-    match params.first() {
-        None | Some(Value::Null) => Ok((1, None)),
+    let pinned = match params.first() {
+        None | Some(Value::Null) => None,
         Some(Value::Object(opts)) => match opts.get("timestamp") {
-            None | Some(Value::Null) => Ok((1, None)),
-            some => Ok((1, Some(parse_u64(some, "timestamp")?))),
+            None | Some(Value::Null) => None,
+            some => Some(parse_u64(some, "timestamp")?),
         },
-        some => Ok((1, Some(parse_u64(some, "timestamp")?))),
-    }
+        some => Some(parse_u64(some, "timestamp")?),
+    };
+    Ok(Mine {
+        count: 1,
+        pinned,
+        interval: 0,
+    })
 }
