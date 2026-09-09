@@ -354,3 +354,62 @@ async fn an_unsigned_body_is_refused_with_invalid_signature() {
         "an unsigned body never reaches consensus"
     );
 }
+
+/// A body Hanvil does not execute has to come back as a precheck the network refused, not as a
+/// transport failure. Before these services were registered, tonic answered a `TokenCreate` or a
+/// `FileCreate` with gRPC status 12 `UNIMPLEMENTED` and an empty message, which the SDK reports
+/// as `Error: 12 UNIMPLEMENTED:` — nothing a caller can act on, and not a Hedera status at all.
+#[tokio::test]
+async fn a_body_hanvil_does_not_execute_is_refused_with_not_supported() {
+    const NOT_SUPPORTED: i32 = 13;
+
+    let node = common::Node::boot();
+    let endpoint = format!("http://127.0.0.1:{}", node.grpc_port);
+    let mut files = proto::file_service_client::FileServiceClient::connect(endpoint.clone())
+        .await
+        .expect("the gRPC listener accepts h2c");
+    let mut tokens = proto::token_service_client::TokenServiceClient::connect(endpoint)
+        .await
+        .expect("the gRPC listener accepts h2c");
+
+    let file = sign_with(
+        &body(
+            now(),
+            proto::transaction_body::Data::FileCreate(proto::FileCreateTransactionBody {
+                contents: b"hanvil".to_vec(),
+                ..Default::default()
+            }),
+        ),
+        &[PAYER_KEY],
+    );
+    let response = files.create_file(file).await.expect("routed, not dropped");
+    assert_eq!(
+        response.into_inner().node_transaction_precheck_code,
+        NOT_SUPPORTED,
+        "FileCreate answers a Hedera precheck code, not a gRPC transport error"
+    );
+
+    let token = sign_with(
+        &body(
+            now(),
+            proto::transaction_body::Data::TokenCreation(proto::TokenCreateTransactionBody {
+                name: "T".to_string(),
+                symbol: "T".to_string(),
+                treasury: Some(account_id(PAYER)),
+                ..Default::default()
+            }),
+        ),
+        &[PAYER_KEY],
+    );
+    let response = tokens
+        .create_token(token)
+        .await
+        .expect("routed, not dropped");
+    assert_eq!(
+        response.into_inner().node_transaction_precheck_code,
+        NOT_SUPPORTED,
+        "TokenCreate answers a Hedera precheck code, not a gRPC transport error"
+    );
+
+    node.shutdown();
+}

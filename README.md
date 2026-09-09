@@ -73,7 +73,7 @@ arrive, so this makes time move, it does not batch.
 | 7546 | JSON-RPC, relay shape | `eth_chainId` `eth_blockNumber` `eth_getBalance` `eth_getCode` `eth_getStorageAt` `eth_getTransactionCount` `eth_gasPrice` `eth_maxPriorityFeePerGas` `eth_feeHistory` `eth_call` `eth_estimateGas` `eth_sendRawTransaction` `eth_sendTransaction` `eth_getTransactionByHash` `eth_getTransactionReceipt` `eth_getBlockBy{Number,Hash}` `eth_getBlockReceipts` `eth_getLogs` `eth_getBlockTransactionCountBy{Hash,Number}` `eth_getTransactionByBlock{Hash,Number}AndIndex` `net_version` `net_listening` `web3_clientVersion` `web3_sha3` |
 | 7546 | Anvil cheats | `evm_snapshot` `evm_revert` `evm_mine` `evm_increaseTime` `evm_setNextBlockTimestamp` `anvil_setBalance` `anvil_setCode` `anvil_setNonce` `anvil_setStorageAt` `anvil_impersonateAccount` `anvil_stopImpersonatingAccount` `anvil_mine` `anvil_nodeInfo`, and the `hardhat_` aliases |
 | 5551 | Mirror node REST | `/api/v1/accounts/{id\|alias\|evm}` `/accounts/{id}/tokens` `/transactions` (`account.id` `transactiontype` `result` `timestamp` `limit` `order`) `/transactions/{0.0.x-sss-nnn}` `/contracts/{id\|address}` `/contracts/{id}/results` `/contracts/results/{hash\|txId}` `/contracts/results/logs` `/topics/{id}` `/topics/{id}/messages` `/topics/{id}/messages/{n}` `/blocks` `/blocks/{number\|hash}` `/network/nodes` `/network/fees` `/network/exchangerate` |
-| 50211 | HAPI gRPC | `CryptoService`: `createAccount` `cryptoTransfer` `cryptoDelete` `cryptoGetBalance` `getAccountInfo` `getTransactionReceipts` `getTxRecordByTxID`. `ConsensusService`: `createTopic` `submitMessage` `getTopicInfo`. `SmartContractService`: `callEthereum` `contractCallLocalMethod`. `NetworkService`: `getVersionInfo` |
+| 50211 | HAPI gRPC | `CryptoService`: `createAccount` `cryptoTransfer` `cryptoDelete` `cryptoGetBalance` `getAccountInfo` `getTransactionReceipts` `getTxRecordByTxID`. `ConsensusService`: `createTopic` `submitMessage` `getTopicInfo`. `SmartContractService`: `callEthereum` `contractCallLocalMethod`. `NetworkService`: `getVersionInfo`. `FileService`, `TokenService`, `ScheduleService`, `FreezeService`, `UtilService` and `AddressBookService` are routed and answer `NOT_SUPPORTED` |
 
 ## What is emulated, and what is not
 
@@ -106,8 +106,12 @@ Not emulated. Each of these is a deliberate hole, not an oversight:
   EVM transaction costs gas at 71 tinybar. A query costs nothing, and `COST_ANSWER` says so.
 - HAPI bodies other than `cryptoCreateAccount`, `cryptoTransfer`, `cryptoDelete`,
   `consensusCreateTopic`, `consensusSubmitMessage` and `ethereumTransaction`. The rest answer
-  `NOT_SUPPORTED` naming the surface that does work. `FileService`, `TokenService`,
-  `ScheduleService` and `FreezeService` are not registered at all.
+  `NOT_SUPPORTED`, and a query Hanvil does not answer comes back as a gRPC status naming it.
+  `FileService`, `TokenService`, `ScheduleService`, `FreezeService`, `UtilService` and
+  `AddressBookService` are registered for that reason alone: an unregistered service is not
+  routed, and tonic would answer a call to one with a bare `12 UNIMPLEMENTED` the SDK reports as
+  a transport failure rather than a refusal the network made. `ContractCreateFlow` deploys
+  through `FileService`, so it is refused rather than hung.
 - The alias key's signature on `cryptoCreateAccount`, and `receiverSigRequired`. The payer's
   signature is what a create is checked against.
 - HTS, HFS, scheduled transactions, token and NFT data. `/accounts/{id}/tokens` is always empty.

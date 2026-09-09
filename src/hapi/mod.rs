@@ -11,6 +11,7 @@ mod crypto;
 mod network;
 mod queries;
 mod render;
+mod unsupported;
 mod wire;
 
 use std::sync::Arc;
@@ -34,10 +35,16 @@ mod generated {
 /// The HAPI messages, nested under their protobuf package.
 pub use generated::proto;
 
+use proto::address_book_service_server::AddressBookServiceServer;
 use proto::consensus_service_server::ConsensusServiceServer;
 use proto::crypto_service_server::CryptoServiceServer;
+use proto::file_service_server::FileServiceServer;
+use proto::freeze_service_server::FreezeServiceServer;
 use proto::network_service_server::NetworkServiceServer;
+use proto::schedule_service_server::ScheduleServiceServer;
 use proto::smart_contract_service_server::SmartContractServiceServer;
+use proto::token_service_server::TokenServiceServer;
+use proto::util_service_server::UtilServiceServer;
 
 use crate::serve::{Bound, Shared};
 use crate::state::{Clock, Record, Status};
@@ -109,14 +116,22 @@ fn log(record: &Record) {
     );
 }
 
-/// Bind and serve the four services. Returns once the socket is listening.
+/// Bind and serve. The four emulated services, and the six that answer `NOT_SUPPORTED` — an
+/// unregistered service would answer a bare gRPC `UNIMPLEMENTED` instead, which the SDK reports
+/// as a transport failure rather than a refusal the network made.
 pub async fn serve(node: Node, host: &str, port: u16) -> std::io::Result<Bound> {
     let router = tonic::service::Routes::builder()
         .routes()
         .add_service(CryptoServiceServer::new(node.clone()))
         .add_service(ConsensusServiceServer::new(node.clone()))
         .add_service(SmartContractServiceServer::new(node.clone()))
-        .add_service(NetworkServiceServer::new(node))
+        .add_service(NetworkServiceServer::new(node.clone()))
+        .add_service(FileServiceServer::new(node.clone()))
+        .add_service(TokenServiceServer::new(node.clone()))
+        .add_service(ScheduleServiceServer::new(node.clone()))
+        .add_service(FreezeServiceServer::new(node.clone()))
+        .add_service(UtilServiceServer::new(node.clone()))
+        .add_service(AddressBookServiceServer::new(node))
         .prepare()
         .into_axum_router();
     crate::serve::bind(host, port, router, "hapi").await
