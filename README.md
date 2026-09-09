@@ -126,6 +126,14 @@ Not emulated. Each of these is a deliberate hole, not an oversight:
   by an inner call is not itemised.
 - The exchange rate is fixed at 1 ℏ = 12 ¢ and never expires.
 - Key lists and threshold keys. Accounts hold one key.
+- The mirror node's gRPC API on port 5600. `Client.forLocalNode()` points its mirror network
+  there, so `TopicMessageQuery` finds nothing listening and retries twenty times before giving up.
+  Read topic messages over REST — `GET /api/v1/topics/{id}/messages` — or point the SDK's mirror
+  network at a real one.
+- The relay's WebSocket endpoint on port 8546. `eth_subscribe` and log watching over WS have
+  nothing to connect to; poll `eth_getLogs` instead.
+- Forking testnet or mainnet state. Hanvil starts from its own genesis every time and makes no
+  outbound calls; `--state` replays a file Hanvil itself wrote.
 
 ### HTS
 
