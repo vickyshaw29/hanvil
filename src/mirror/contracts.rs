@@ -12,7 +12,8 @@ use crate::serve::Shared;
 use crate::state::{AUTO_RENEW_PERIOD_SECS, Chain, EntityId, StoredLog, TxRecord};
 
 /// `GET /api/v1/contracts/{contractIdOrAddress}` — `openapi.yml:1586` ContractResponse.
-pub async fn get(State(chain): State<Shared>, Path(id): Path<String>) -> Answer {
+pub async fn get(State(chain): State<Shared>, Path(id): Path<String>, params: Params) -> Answer {
+    params.only(&[])?;
     let reference = shapes::parse_reference(&id, "contractIdOrAddress")?;
     let chain = chain.read();
     let (entity, address) = resolve(&chain, &reference).ok_or_else(Error::not_found)?;
@@ -50,6 +51,7 @@ pub async fn results(
     Path(id): Path<String>,
     params: Params,
 ) -> Answer {
+    params.only(&["limit", "order"])?;
     let limit = params.limit()?;
     let order = params.order(Order::Desc)?;
     let reference = shapes::parse_reference(&id, "contractIdOrAddress")?;
@@ -68,7 +70,8 @@ pub async fn results(
 
 /// `GET /api/v1/contracts/results/{transactionIdOrHash}` — `openapi.yml:2516`
 /// ContractResultDetails. Takes the 32-byte EVM hash or a `0.0.x-sss-nnn` transaction id.
-pub async fn result(State(chain): State<Shared>, Path(id): Path<String>) -> Answer {
+pub async fn result(State(chain): State<Shared>, Path(id): Path<String>, params: Params) -> Answer {
+    params.only(&[])?;
     let chain = chain.read();
     let found = match id.strip_prefix("0x") {
         Some(body) => hex::decode(body)
@@ -95,6 +98,7 @@ pub async fn logs(
     contract: Option<Path<String>>,
     params: Params,
 ) -> Answer {
+    params.only(&["limit", "order"])?;
     let limit = params.limit()?;
     let order = params.order(Order::Desc)?;
     let chain = chain.read();

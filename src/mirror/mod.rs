@@ -36,6 +36,8 @@ pub enum Error {
     Invalid {
         /// The `message` field.
         message: String,
+        /// The `detail` field, when there is something useful to add.
+        detail: Option<String>,
     },
 }
 
@@ -52,6 +54,22 @@ impl Error {
     pub fn invalid_parameter(name: &str) -> Self {
         Self::Invalid {
             message: format!("Invalid parameter: {name}"),
+            detail: None,
+        }
+    }
+
+    /// 400 for a query parameter this endpoint does not apply. The mirror would filter on it, so
+    /// answering 200 with the unfiltered list hands the caller data that does not match what they
+    /// asked for; naming what is applied is the only honest answer (`.claude/CLAUDE.md` §3.6).
+    pub fn unapplied_parameter(name: &str, applied: &[&str]) -> Self {
+        let applied = if applied.is_empty() {
+            "this endpoint applies none".to_string()
+        } else {
+            format!("this endpoint applies {}", applied.join(", "))
+        };
+        Self::Invalid {
+            message: format!("Invalid parameter: {name}"),
+            detail: Some(format!("hanvil does not apply {name}; {applied}")),
         }
     }
 
@@ -62,6 +80,7 @@ impl Error {
             message: "Invalid Transaction id. Please use \"shard.realm.num-sss-nnn\" format where \
                       sss are seconds and nnn are nanoseconds"
                 .to_string(),
+            detail: None,
         }
     }
 
@@ -80,7 +99,7 @@ impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let (status, message, detail) = match self {
             Self::NotFound { message, detail } => (StatusCode::NOT_FOUND, message, detail),
-            Self::Invalid { message } => (StatusCode::BAD_REQUEST, message, None),
+            Self::Invalid { message, detail } => (StatusCode::BAD_REQUEST, message, detail),
         };
         let mut entry = json!({ "message": message });
         if let Some(detail) = detail {
@@ -170,6 +189,22 @@ impl Params {
         shapes::parse_entity_id(value)
             .map(Some)
             .map_err(|()| Error::invalid_parameter(name))
+    }
+
+    /// Refuse every parameter this endpoint does not apply, `applied` being the ones it does.
+    /// The mirror defines filters on paths Hanvil serves that Hanvil does not implement — a
+    /// `topic0` on a log query, a `timestamp` on a block list. Ignoring one and answering 200
+    /// returns rows the caller did not ask for and cannot tell apart from a real answer, so
+    /// every handler names what it applies and refuses the rest.
+    fn only(&self, applied: &[&str]) -> Result<(), Error> {
+        match self
+            .0
+            .iter()
+            .find(|(key, _)| !applied.contains(&key.as_str()))
+        {
+            Some((key, _)) => Err(Error::unapplied_parameter(key, applied)),
+            None => Ok(()),
+        }
     }
 }
 

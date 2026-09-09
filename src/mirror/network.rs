@@ -11,7 +11,8 @@ use crate::state::{CENT_EQUIVALENT, EXCHANGE_RATE_VALID_SECS, HBAR_EQUIVALENT, N
 
 /// `GET /api/v1/network/nodes` — `openapi.yml:2982` NetworkNode. Hanvil is one node, 0.0.3, the
 /// account every HAPI transaction must name.
-pub async fn nodes(State(chain): State<Shared>) -> Answer {
+pub async fn nodes(State(chain): State<Shared>, params: Params) -> Answer {
+    params.only(&[])?;
     let chain = chain.read();
     let genesis = chain.genesis_timestamp();
     Ok(Json(json!({
@@ -47,7 +48,8 @@ pub async fn nodes(State(chain): State<Shared>) -> Answer {
 ///
 /// VERIFY: 1 ℏ = 12 ¢ is Hedera's long-standing default rate; the value hiero-local-node serves
 /// was not found in its sources (docs/research.md §6, 2026-09-07).
-pub async fn exchange_rate(State(chain): State<Shared>) -> Answer {
+pub async fn exchange_rate(State(chain): State<Shared>, params: Params) -> Answer {
+    params.only(&[])?;
     let chain = chain.read();
     let now = chain.latest_block().consensus_timestamp;
     let rate = json!({
@@ -67,6 +69,7 @@ pub async fn exchange_rate(State(chain): State<Shared>) -> Answer {
 pub async fn fees(State(chain): State<Shared>, params: Params) -> Answer {
     use super::Order;
 
+    params.only(&["order"])?;
     let order = params.order(Order::Asc)?;
     let chain = chain.read();
     let gas = chain.gas_price().0;

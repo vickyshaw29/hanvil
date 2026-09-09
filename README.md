@@ -118,6 +118,13 @@ Not emulated. Each of these is a deliberate hole, not an oversight:
 - `AccountInfo.alias` over HAPI is empty for the same reason the mirror's is null; the EVM
   address is in `contractAccountId`.
 - Historical state. Only the head is served; asking for an older block is an error, not a guess.
+- The mirror's query filters outside the ones listed in the endpoint table. `timestamp` and
+  `transactiontype` off `/transactions`, `block.number`, `topic0`–`topic3`, `hbar`, `nonce`,
+  `scheduled`, `type`, `internal`, `from`, `encoding`, `file_id` and `node.id` are refused with
+  `400 Invalid parameter` naming what the endpoint does apply. A real mirror would filter on them;
+  answering 200 with the unfiltered list is the one wrong answer a caller cannot detect.
+- Pagination. `links.next` is always null and a list is cut at `limit` (default 25, maximum 100).
+  A query with more matches than the limit returns the first page and no cursor to the rest.
 - Batch mining: `evm_setAutomine` and `evm_setIntervalMining` return `-32601` with the reason.
 - `anvil_dumpState`, `anvil_loadState` and `anvil_reset` over JSON-RPC. State does persist across
   restarts, through `--state` / `--dump-state` on the command line.

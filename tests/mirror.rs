@@ -373,3 +373,41 @@ fn transactions_filter_by_timestamp_and_by_range() {
         json!("Invalid parameter: timestamp")
     );
 }
+
+/// The mirror defines filters on these paths that Hanvil does not apply. Answering 200 with the
+/// unfiltered list hands back rows the caller did not ask for and cannot tell from a real answer,
+/// so each is refused by name with what the endpoint does apply.
+#[test]
+fn a_filter_hanvil_does_not_apply_is_refused_rather_than_ignored() {
+    let node = Node::boot();
+    for (path, parameter) in [
+        (
+            "/api/v1/accounts/0.0.1012?transactiontype=CRYPTOTRANSFER",
+            "transactiontype",
+        ),
+        ("/api/v1/accounts/0.0.1012?timestamp=gt:0", "timestamp"),
+        ("/api/v1/blocks?block.number=0", "block.number"),
+        ("/api/v1/contracts/results/logs?topic0=0x00", "topic0"),
+        ("/api/v1/transactions?type=credit", "type"),
+        ("/api/v1/network/nodes?node.id=0", "node.id"),
+        (
+            "/api/v1/topics/0.0.1001/messages?encoding=utf-8",
+            "encoding",
+        ),
+    ] {
+        let (status, body) = node.get(path);
+        assert_eq!(status, 400, "{path} must refuse {parameter}, not ignore it");
+        let entry = &body["_status"]["messages"][0];
+        assert_eq!(
+            entry["message"],
+            json!(format!("Invalid parameter: {parameter}"))
+        );
+        assert!(
+            entry["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains(parameter)),
+            "the refusal names the parameter and what is applied: {entry}"
+        );
+    }
+    node.shutdown();
+}

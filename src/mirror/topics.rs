@@ -11,7 +11,8 @@ use crate::serve::Shared;
 use crate::state::{EntityId, Topic, TopicMessage, hapi};
 
 /// `GET /api/v1/topics/{topicId}` — `openapi.yml:4138` Topic.
-pub async fn get(State(chain): State<Shared>, Path(id): Path<String>) -> Answer {
+pub async fn get(State(chain): State<Shared>, Path(id): Path<String>, params: Params) -> Answer {
+    params.only(&[])?;
     let id = shapes::parse_entity_id(&id).map_err(|()| Error::invalid_parameter("topicId"))?;
     let chain = chain.read();
     let topic = chain.topic(id).ok_or_else(|| not_found(id))?;
@@ -26,6 +27,7 @@ pub async fn messages(
     params: Params,
 ) -> Answer {
     let id = shapes::parse_entity_id(&id).map_err(|()| Error::invalid_parameter("topicId"))?;
+    params.only(&["limit", "order", "sequencenumber"])?;
     let limit = params.limit()?;
     let order = params.order(Order::Asc)?;
     let wanted = match params.get("sequencenumber") {
@@ -54,7 +56,9 @@ pub async fn messages(
 pub async fn message(
     State(chain): State<Shared>,
     Path((id, sequence_number)): Path<(String, String)>,
+    params: Params,
 ) -> Answer {
+    params.only(&[])?;
     let id = shapes::parse_entity_id(&id).map_err(|()| Error::invalid_parameter("topicId"))?;
     let sequence_number: u64 = sequence_number
         .parse()

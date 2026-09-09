@@ -16,6 +16,7 @@ use crate::state::{Block, Chain, TxBody};
 
 /// `GET /api/v1/blocks`.
 pub async fn list(State(chain): State<Shared>, params: Params) -> Answer {
+    params.only(&["limit", "order"])?;
     let limit = params.limit()?;
     let order = params.order(Order::Desc)?;
     let chain = chain.read();
@@ -31,7 +32,8 @@ pub async fn list(State(chain): State<Shared>, params: Params) -> Answer {
 }
 
 /// `GET /api/v1/blocks/{hashOrNumber}`.
-pub async fn by_id(State(chain): State<Shared>, Path(id): Path<String>) -> Answer {
+pub async fn by_id(State(chain): State<Shared>, Path(id): Path<String>, params: Params) -> Answer {
+    params.only(&[])?;
     let chain = chain.read();
     let found = match id.strip_prefix("0x") {
         Some(body) => hex::decode(body)

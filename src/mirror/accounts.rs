@@ -14,6 +14,7 @@ use crate::state::{AUTO_RENEW_PERIOD_SECS, Account, Chain, Timestamp};
 /// `GET /api/v1/accounts/{idOrAliasOrEvmAddress}` — `openapi.yml:2148`
 /// AccountBalanceTransactions: an AccountInfo with the account's transactions attached.
 pub async fn get(State(chain): State<Shared>, Path(id): Path<String>, params: Params) -> Answer {
+    params.only(&["limit", "order", "transactions"])?;
     let limit = params.limit()?;
     let order = params.order(Order::Desc)?;
     let with_transactions = params.flag("transactions", true)?;
@@ -39,7 +40,8 @@ pub async fn get(State(chain): State<Shared>, Path(id): Path<String>, params: Pa
 
 /// `GET /api/v1/accounts/{id}/tokens`. Hanvil emulates no token service, so the list is empty for
 /// every account that exists, and a 404 for one that does not.
-pub async fn tokens(State(chain): State<Shared>, Path(id): Path<String>) -> Answer {
+pub async fn tokens(State(chain): State<Shared>, Path(id): Path<String>, params: Params) -> Answer {
+    params.only(&[])?;
     let reference = shapes::parse_reference(&id, "accountId")?;
     let chain = chain.read();
     resolve(&chain, &reference).ok_or_else(Error::not_found)?;

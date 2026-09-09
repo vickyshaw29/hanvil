@@ -23,6 +23,14 @@ const VALID_DURATION_SECONDS: u64 = 120;
 
 /// `GET /api/v1/transactions`.
 pub async fn list(State(chain): State<Shared>, params: Params) -> Answer {
+    params.only(&[
+        "limit",
+        "order",
+        "account.id",
+        "transactiontype",
+        "result",
+        "timestamp",
+    ])?;
     let limit = params.limit()?;
     let order = params.order(Order::Desc)?;
     let account = params.entity_filter("account.id")?;
@@ -151,7 +159,8 @@ fn hapi_record(found: &Record) -> Value {
 
 /// `GET /api/v1/transactions/{transactionId}`. The id is `0.0.x-sss-nnn`; the SDK's `@` form is a
 /// 400, which is what PR #39's reader stops polling on.
-pub async fn by_id(State(chain): State<Shared>, Path(id): Path<String>) -> Answer {
+pub async fn by_id(State(chain): State<Shared>, Path(id): Path<String>, params: Params) -> Answer {
+    params.only(&[])?;
     let (payer, valid_start) = shapes::parse_transaction_id(&id)?;
     let chain = chain.read();
     let mut found: Vec<Value> = chain
