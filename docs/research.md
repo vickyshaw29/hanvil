@@ -462,3 +462,29 @@ leaves 4 GB for the OS.
   edits `src/validation/chainSigner.ts` and `test/doctor.test.mjs` — the same files as PR 1.**
   They deepen the testnet operator check; PR 1 skips it on local. Composable, textually
   conflicting; the PR description should say so.
+
+## 19. Day 5 findings (2026-09-09): Hedera charges exactly the gas used
+
+Checked because Hanvil charges `gas_used × gas_price` (`src/state/mod.rs:549`) and Hedera was
+long known to bill a minimum of 80 % of the gas limit. If that rule still held, Hanvil would
+under-report what every contract call costs — the one divergence that costs a user money rather
+than a feature.
+
+It no longer holds.
+
+| Source | Value |
+| --- | --- |
+| [HIP-1249 "Precise Smart Contract Throttling"](https://raw.githubusercontent.com/hiero-ledger/hiero-improvement-proposals/main/HIP/hip-1249.md), status Final, release **v0.69.0** | "Remove the 80% minimum charge, aligning closer to Ethereum." Users "pay exactly for gas used, up to their specified limit". "All gas handling, including refunds, work exactly as they do in Ethereum (for example, see EIP-3529)." |
+| `hedera-node/hedera-config/.../data/ContractsConfig.java` on `main` | `@ConfigProperty(defaultValue = "100") int maxRefundPercentOfGasLimit` — a full refund of unused gas |
+| `research/hiero-local-node/.env:7` | `NETWORK_NODE_IMAGE_TAG=0.72.0`, past 0.69.0, so the rule is in force in the stack Hanvil replaces |
+| `research/hiero-local-node/compose-network/network-node/data/config/{application,bootstrap}.properties` | set `contracts.chainId=298` and nothing about refunds — local-node takes the 100 % default |
+| `research/hiero-mirror-node/docs/configuration.md:736` | `hiero.mirror.web3.evm.maxGasRefundPercentage` defaults to `100%`, so the mirror's simulation agrees |
+
+Hanvil's accounting already matches: revm refunds unused gas to the payer, and
+`credit_burned_base_fee(gas_used)` moves only the used portion to `0.0.98`. No change to `src/`.
+Recorded in the README so the question is answered where a reader would ask it.
+
+Not checked: whether HIP-1249's throttling changes anything about the 15,000,000 per-transaction
+gas cap Hanvil enforces. That cap is taken from the relay's `MAX_TRANSACTION_GAS_LIMIT`
+(§5), and the consensus node's `contracts.maxGasPerSec` shares the number but is a per-second
+network throttle, not a per-transaction limit. Two different rules that happen to agree today.
