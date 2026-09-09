@@ -293,31 +293,49 @@ fn receipts_carry_the_relay_field_set_on_success_and_on_revert() {
     }
 }
 
-/// An address with no code answers a call with success and empty data, so an unemulated HTS call
-/// would read as having worked. Genesis etches a reverting stub at `0x…0167` instead.
+/// An address with no code answers a call with success and empty data, so a call to an unemulated
+/// system contract would read as having worked. Genesis etches a reverting stub at each instead.
 #[test]
-fn hts_system_contract_reverts_with_a_decodable_reason() {
+fn system_contracts_revert_with_a_decodable_reason() {
     let node = Node::boot();
-    let error = node.error(
-        "eth_call",
-        json!([{
-            "to": "0x0000000000000000000000000000000000000167",
-            "data": format!("0x{}", hex::encode(selector("createFungibleToken()"))),
-        }, "latest"]),
-    );
-    assert_eq!(
-        error["code"],
-        json!(3),
-        "geth revert shape, so viem decodes it"
-    );
-    assert_eq!(
-        error["message"],
-        json!("execution reverted: hanvil: HTS system contract not emulated; see README#hts")
-    );
-    assert!(
-        error["data"].as_str().unwrap().starts_with("0x08c379a0"),
-        "Error(string) selector"
-    );
+    for (address, call, reason) in [
+        (
+            "0x0000000000000000000000000000000000000167",
+            "createFungibleToken()",
+            "hanvil: HTS system contract not emulated; see README#system-contracts",
+        ),
+        (
+            "0x0000000000000000000000000000000000000168",
+            "tinycentsToTinybars(uint256)",
+            "hanvil: exchange rate system contract not emulated; see README#system-contracts",
+        ),
+        (
+            "0x0000000000000000000000000000000000000169",
+            "getPseudorandomSeed()",
+            "hanvil: PRNG system contract not emulated; see README#system-contracts",
+        ),
+    ] {
+        let error = node.error(
+            "eth_call",
+            json!([{
+                "to": address,
+                "data": format!("0x{}", hex::encode(selector(call))),
+            }, "latest"]),
+        );
+        assert_eq!(
+            error["code"],
+            json!(3),
+            "geth revert shape, so viem decodes it"
+        );
+        assert_eq!(
+            error["message"],
+            json!(format!("execution reverted: {reason}"))
+        );
+        assert!(
+            error["data"].as_str().unwrap().starts_with("0x08c379a0"),
+            "Error(string) selector"
+        );
+    }
 }
 
 /// `--state` writes the chain on exit and reads it back at boot, so a second run continues the

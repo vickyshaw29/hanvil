@@ -111,7 +111,8 @@ Not emulated. Each of these is a deliberate hole, not an oversight:
 - The alias key's signature on `cryptoCreateAccount`, and `receiverSigRequired`. The payer's
   signature is what a create is checked against.
 - HTS, HFS, scheduled transactions, token and NFT data. `/accounts/{id}/tokens` is always empty.
-  A call to the HTS system contract reverts rather than pretending — see [HTS](#hts) below.
+  A call to a Hedera system contract reverts rather than pretending — see
+  [System contracts](#system-contracts) below.
 - Chunked topic messages keep no chunk metadata: each chunk is stored as its own message, and
   the mirror's `chunk_info` is null.
 - `AccountInfo.alias` over HAPI is empty for the same reason the mirror's is null; the EVM
@@ -137,22 +138,33 @@ Not emulated. Each of these is a deliberate hole, not an oversight:
 - Forking testnet or mainnet state. Hanvil starts from its own genesis every time and makes no
   outbound calls; `--state` replays a file Hanvil itself wrote.
 
-### HTS
+### System contracts
 
-Hedera's token service lives at the system contract `0.0.359`, long-zero address
-`0x0000000000000000000000000000000000000167`. Hanvil does not emulate it.
+Hedera puts three system contracts at fixed addresses in the EVM. Hanvil emulates none of them:
+
+| Entity | Address | What it is |
+| --- | --- | --- |
+| `0.0.359` | `0x…0167` | Hedera Token Service |
+| `0.0.360` | `0x…0168` | exchange rate, `tinycentsToTinybars(uint256)` |
+| `0.0.361` | `0x…0169` | pseudorandom seed, `getPseudorandomSeed()` (HIP-351) |
 
 An address with no code is not an error in the EVM: a call to one succeeds and returns nothing.
 A contract that calls `createFungibleToken` on an unemulated chain would therefore read the call
-as having worked and carry on with a token that does not exist. So genesis etches bytecode at
-`0x…0167` that reverts with `Error(string)`:
+as having worked and carry on with a token that does not exist, and one that asks `0x…0169` for a
+random seed would take the zero it did not get as the seed. So genesis etches bytecode at all
+three that reverts with `Error(string)`:
 
 ```
-hanvil: HTS system contract not emulated; see README#hts
+hanvil: HTS system contract not emulated; see README#system-contracts
+hanvil: exchange rate system contract not emulated; see README#system-contracts
+hanvil: PRNG system contract not emulated; see README#system-contracts
 ```
 
 viem, ethers and `cast` all decode that, and `eth_call` returns it as `{"code": 3, "data": "0x08c379a0…"}`.
 `anvil_setCode` overwrites it if you want to put a mock there.
+
+The Hedera Account Service (HIP-632) is not stubbed. HIP-632 names its functions and not its
+address, and Hanvil does not etch an address it cannot cite.
 
 Etched bytecode, not a precompile: the behaviour a caller sees is identical, and it survives
 `evm_snapshot` / `evm_revert` because it is part of the chain state that gets cloned.

@@ -87,12 +87,33 @@ pub const TREASURY: EntityId = EntityId(2);
 pub const NODE: EntityId = EntityId(3);
 /// Fee collection account; EVM fees land here.
 pub const FEE_COLLECTOR: EntityId = EntityId(98);
-/// Hedera's HTS system contract, `0.0.359` — long-zero address `0x…0167`. Hanvil does not
-/// emulate it; genesis etches bytecode there that reverts, so a token call fails loudly instead
-/// of reading as a success with empty return data.
+/// Hedera's HTS system contract, `0.0.359` — long-zero address `0x…0167`.
 pub const HTS_SYSTEM_CONTRACT: EntityId = EntityId(359);
 /// What a call to [`HTS_SYSTEM_CONTRACT`] reverts with.
-pub const HTS_NOT_EMULATED: &str = "hanvil: HTS system contract not emulated; see README#hts";
+pub const HTS_NOT_EMULATED: &str =
+    "hanvil: HTS system contract not emulated; see README#system-contracts";
+/// Hedera's exchange rate system contract, `0.0.360` — long-zero address `0x…0168`, the address
+/// the mirror node's own manual test calls `tinycentsToTinybars(uint256)` on
+/// (`hiero-mirror-node/docs/web3/README.md:59,69`).
+pub const EXCHANGE_RATE_SYSTEM_CONTRACT: EntityId = EntityId(360);
+/// What a call to [`EXCHANGE_RATE_SYSTEM_CONTRACT`] reverts with.
+pub const EXCHANGE_RATE_NOT_EMULATED: &str =
+    "hanvil: exchange rate system contract not emulated; see README#system-contracts";
+/// Hedera's pseudorandom number generator, `0.0.361` — long-zero address `0x…0169`. HIP-351
+/// (Final) puts it there: "the solidity precompiled contract is to reside at address `0x169`".
+pub const PRNG_SYSTEM_CONTRACT: EntityId = EntityId(361);
+/// What a call to [`PRNG_SYSTEM_CONTRACT`] reverts with.
+pub const PRNG_NOT_EMULATED: &str =
+    "hanvil: PRNG system contract not emulated; see README#system-contracts";
+/// Every Hedera system contract Hanvil does not emulate, with the reason a call to it reverts
+/// with. Genesis etches reverting bytecode at each: an address with no code is not an error in
+/// the EVM, so a call to one succeeds and returns nothing, and a caller would read a token
+/// operation, an exchange rate or a random seed as having worked.
+const UNEMULATED_SYSTEM_CONTRACTS: [(EntityId, &str); 3] = [
+    (HTS_SYSTEM_CONTRACT, HTS_NOT_EMULATED),
+    (EXCHANGE_RATE_SYSTEM_CONTRACT, EXCHANGE_RATE_NOT_EMULATED),
+    (PRNG_SYSTEM_CONTRACT, PRNG_NOT_EMULATED),
+];
 /// Most gas one transaction may ask for, and what a block reports as its limit. This is the
 /// relay's `MAX_TRANSACTION_GAS_LIMIT` default (relay `docs/configuration.md:82`), which refuses
 /// `eth_sendRawTransaction` above it and caps an `eth_call` asking for more; its rejection calls
@@ -190,10 +211,9 @@ impl Chain {
             chain.insert_account(account);
         }
         chain.next_id = chain.next_id.max(FIRST_USER_ID);
-        chain.etch(
-            long_zero_address(HTS_SYSTEM_CONTRACT),
-            evm::revert_stub(HTS_NOT_EMULATED),
-        );
+        for (entity, reason) in UNEMULATED_SYSTEM_CONTRACTS {
+            chain.etch(long_zero_address(entity), evm::revert_stub(reason));
+        }
         let genesis_hash = keccak256(format!("hanvil genesis chain {}", genesis.chain_id));
         chain.blocks.push(Block {
             number: 0,
@@ -1370,30 +1390,46 @@ mod tests {
         .expect("genesis")
     }
 
-    /// An HTS call must fail loudly. Before genesis etched a stub there, `0x…0167` was an empty
-    /// address, and the EVM answers a call to one with success and no return data — a token
-    /// operation would read as having worked.
+    /// A call to an unemulated system contract must fail loudly. Before genesis etched stubs
+    /// there, each was an empty address, and the EVM answers a call to one with success and no
+    /// return data — a token operation, a price lookup or a seed would read as having worked.
     #[test]
-    fn a_call_to_the_hts_system_contract_reverts_with_a_reason() {
+    fn a_call_to_an_unemulated_system_contract_reverts_with_a_reason() {
+        for (entity, reason) in UNEMULATED_SYSTEM_CONTRACTS {
+            let mut c = chain();
+            // Any selector; the stub reverts before reading calldata.
+            let request = CallRequest {
+                to: Some(long_zero_address(entity)),
+                input: Bytes::from_static(&[0x27, 0x8e, 0x0e, 0x45]),
+                gas: Some(100_000),
+                ..CallRequest::default()
+            };
+            let result = c
+                .call(&request, Timestamp::from_secs(1_700_000_000))
+                .expect("the call executes");
+            let ExecutionResult::Revert { output, .. } = result else {
+                panic!("expected a revert from {entity}, got {result:?}");
+            };
+            assert_eq!(
+                evm::revert_reason(&output).as_deref(),
+                Some(reason),
+                "the reason has to decode as Error(string) so viem and ethers show it"
+            );
+        }
+    }
+
+    /// The stubs are chain state, not a special case in the executor, so a snapshot taken before
+    /// one is overwritten puts it back.
+    #[test]
+    fn a_system_contract_stub_survives_snapshot_and_revert() {
         let mut c = chain();
-        // `createFungibleToken(...)` — any selector; the stub reverts before reading calldata.
-        let request = CallRequest {
-            to: Some(long_zero_address(HTS_SYSTEM_CONTRACT)),
-            input: Bytes::from_static(&[0x27, 0x8e, 0x0e, 0x45]),
-            gas: Some(100_000),
-            ..CallRequest::default()
-        };
-        let result = c
-            .call(&request, Timestamp::from_secs(1_700_000_000))
-            .expect("the call executes");
-        let ExecutionResult::Revert { output, .. } = result else {
-            panic!("expected a revert, got {result:?}");
-        };
-        assert_eq!(
-            evm::revert_reason(&output).as_deref(),
-            Some(HTS_NOT_EMULATED),
-            "the reason has to decode as Error(string) so viem and ethers show it"
-        );
+        let address = long_zero_address(EXCHANGE_RATE_SYSTEM_CONTRACT);
+        let stub = c.code_by_evm(&address);
+        assert!(!stub.is_empty(), "genesis etches the exchange rate stub");
+        let id = c.snapshot();
+        c.set_code(address, Bytes::from_static(&[0x00]));
+        assert!(c.revert(id), "the snapshot is there");
+        assert_eq!(c.code_by_evm(&address), stub, "revert restores the stub");
     }
 
     #[test]

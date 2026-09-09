@@ -488,3 +488,19 @@ Not checked: whether HIP-1249's throttling changes anything about the 15,000,000
 gas cap Hanvil enforces. That cap is taken from the relay's `MAX_TRANSACTION_GAS_LIMIT`
 (§5), and the consensus node's `contracts.maxGasPerSec` shares the number but is a per-second
 network throttle, not a per-transaction limit. Two different rules that happen to agree today.
+
+## 20. Hedera's EVM system contract addresses (2026-09-09)
+
+Hanvil etched a reverting stub at `0x…0167` and nowhere else, so a call to the other two
+answered with success and empty data — the exact failure the HTS stub exists to prevent.
+
+| Entity | Address | Source |
+| --- | --- | --- |
+| `0.0.359` | `0x…0167` | already cited in `docs/code-plan.md` §10 |
+| `0.0.360` | `0x…0168` | `research/hiero-mirror-node/docs/web3/README.md:59,69` — the mirror's own manual test calls `tinycentsToTinybars(uint256)` at that address |
+| `0.0.361` | `0x…0169` | [HIP-351](https://raw.githubusercontent.com/hiero-ledger/hiero-improvement-proposals/main/HIP/hip-351.md) "Add UtilPrngTransaction", status Final: "the solidity precompiled contract is to reside at address `0x169`", exposing `getPseudorandomSeed() external returns (bytes32)` |
+
+Not resolved: the Hedera Account Service (HIP-632, status Final) names five functions —
+`getEvmAddressAlias` `0xdea3d081`, `getHederaAccountNumAlias` `0xbbf12d2e`, `isValidAlias`
+`0x308ef301`, `isAuthorized` `0xb2526367`, `isAuthorizedRaw` `0xb2a31da4` — and no address. It is
+not in the mirror node or relay clones either. No stub is etched for it, and the README says so.
