@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Every import in the vendored tree is written relative to proto/ ("services/x.proto",
     // "platform/…"), so a single include root is enough and nothing is shadowed.
     tonic_prost_build::configure()
-        .build_client(false)
+        .build_client(true)
         .build_server(true)
         .include_file("hapi.rs")
         .compile_protos(&files, &[root.clone(), well_known])?;

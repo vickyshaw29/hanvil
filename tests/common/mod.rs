@@ -24,6 +24,8 @@ pub struct Node {
     pub port: u16,
     /// Mirror REST port, from the banner.
     pub mirror_port: u16,
+    /// HAPI gRPC port, from the banner.
+    pub grpc_port: u16,
 }
 
 impl Node {
@@ -39,6 +41,7 @@ impl Node {
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut port = None;
         let mut mirror_port = None;
+        let mut grpc_port = None;
         while Instant::now() < deadline {
             let Some(Ok(line)) = lines.next() else { break };
             if let Some(rest) = line.strip_prefix("JSON-RPC   http://127.0.0.1:") {
@@ -46,6 +49,9 @@ impl Node {
             }
             if let Some(rest) = line.strip_prefix("Mirror     http://127.0.0.1:") {
                 mirror_port = rest.split('/').next().and_then(|p| p.trim().parse().ok());
+            }
+            if let Some(rest) = line.strip_prefix("HAPI gRPC  127.0.0.1:") {
+                grpc_port = rest.split_whitespace().next().and_then(|p| p.parse().ok());
             }
             if line.starts_with("Started in") {
                 break;
@@ -57,6 +63,7 @@ impl Node {
             child,
             port: port.expect("banner names the bound JSON-RPC port"),
             mirror_port: mirror_port.expect("banner names the bound mirror port"),
+            grpc_port: grpc_port.expect("banner names the bound gRPC port"),
         }
     }
 
