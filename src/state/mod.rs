@@ -93,8 +93,12 @@ pub const FEE_COLLECTOR: EntityId = EntityId(98);
 pub const HTS_SYSTEM_CONTRACT: EntityId = EntityId(359);
 /// What a call to [`HTS_SYSTEM_CONTRACT`] reverts with.
 pub const HTS_NOT_EMULATED: &str = "hanvil: HTS system contract not emulated; see README#hts";
-/// Block gas limit reported to clients. Hedera's per-transaction cap is 15M; a block holds two.
-pub const BLOCK_GAS_LIMIT: u64 = 30_000_000;
+/// Most gas one transaction may ask for, and what a block reports as its limit. This is the
+/// relay's `MAX_TRANSACTION_GAS_LIMIT` default (relay `docs/configuration.md:82`), which refuses
+/// `eth_sendRawTransaction` above it and caps an `eth_call` asking for more; its rejection calls
+/// this number the block gas limit (relay `docs/design/batch-request.md:157`), so blocks report
+/// it too rather than advertising headroom the network will not accept.
+pub const BLOCK_GAS_LIMIT: u64 = 15_000_000;
 /// Fee charged for every HAPI transaction, whatever the body. Hanvil does not emulate Hedera's
 /// fee schedule; this is one flat number, listed in the README under what is not emulated.
 pub const HAPI_FEE: Tinybar = Tinybar(10_000);
@@ -614,6 +618,12 @@ impl Chain {
         effective_gas_price: u64,
         now: Timestamp,
     ) -> Result<B256, Error> {
+        if env.gas_limit > BLOCK_GAS_LIMIT {
+            return Err(Error::Rejected(Rejected::GasLimitTooHigh {
+                tx: env.gas_limit,
+                max: BLOCK_GAS_LIMIT,
+            }));
+        }
         let timestamp = self.next_block_timestamp(now);
         let consensus_timestamp = self.next_consensus(Timestamp {
             secs: timestamp,
@@ -724,7 +734,7 @@ impl Chain {
             .tx_type(Some(0))
             .caller(request.from.unwrap_or_default())
             .nonce(self.nonce_by_evm(&request.from.unwrap_or_default()))
-            .gas_limit(request.gas.unwrap_or(BLOCK_GAS_LIMIT))
+            .gas_limit(request.gas.unwrap_or(BLOCK_GAS_LIMIT).min(BLOCK_GAS_LIMIT))
             .gas_price(u128::from(request.gas_price.unwrap_or(0)))
             .kind(match request.to {
                 Some(to) => TxKind::Call(to),
@@ -753,7 +763,7 @@ impl Chain {
     /// between the gas the unconstrained run used and the block limit (the 63/64 rule makes the
     /// first number insufficient for calls that make calls).
     pub fn estimate_gas(&mut self, request: &CallRequest, now: Timestamp) -> Result<u64, Error> {
-        let cap = request.gas.unwrap_or(BLOCK_GAS_LIMIT);
+        let cap = request.gas.unwrap_or(BLOCK_GAS_LIMIT).min(BLOCK_GAS_LIMIT);
         let unconstrained = self.call(
             &CallRequest {
                 gas: Some(cap),

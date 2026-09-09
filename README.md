@@ -81,7 +81,10 @@ The EVM runs in tinybar, as it does on Hedera. One EVM wei is one tinybar; `eth_
 `eth_gasPrice` multiply by 10¹⁰ at the JSON-RPC boundary, a `value` that is not a whole number of
 tinybar is refused with the relay's error, and a Solidity `1 ether` literal is 10¹⁸ tinybar — the
 same quirk real Hedera has. Gas costs 71 tinybar; the fee goes to 0.0.98 instead of being burned,
-so supply is conserved and fees are visible on that account. One block is mined per transaction.
+so supply is conserved and fees are visible on that account. A transaction asking for more than
+15,000,000 gas is refused with the relay's `-32005` and its wording, and an `eth_call` asking for
+more is capped to it — the relay's `MAX_TRANSACTION_GAS_LIMIT`, so a contract that deploys here
+also deploys on Hedera. One block is mined per transaction.
 Contracts created through the EVM are allocated a `0.0.N` id and appear on the mirror endpoints
 under it.
 

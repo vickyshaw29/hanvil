@@ -86,9 +86,15 @@ pub enum Rejected {
         /// Chain id of this network.
         expected: u64,
     },
-    /// Gas limit above the block's.
-    #[error("gas limit exceeds the block gas limit")]
-    GasLimitTooHigh,
+    /// Gas limit above what the network accepts for one transaction. Wording and quoting are the
+    /// relay's (`docs/design/batch-request.md:157`): the request in hex, the maximum in decimal.
+    #[error("Transaction gas limit '{tx:#x}' exceeds block gas limit '{max}'")]
+    GasLimitTooHigh {
+        /// Gas the transaction asked for.
+        tx: u64,
+        /// Most the network accepts.
+        max: u64,
+    },
     /// Anything else revm refuses.
     #[error("{0}")]
     Other(String),
@@ -205,6 +211,7 @@ pub fn execute(
             b.beneficiary = block.beneficiary;
         });
     let mut evm = ctx.build_mainnet();
+    let gas_limit = tx.gas_limit;
     let outcome = evm.transact(tx);
     *db = evm.ctx.journaled_state.database;
     match outcome {
@@ -212,11 +219,16 @@ pub fn execute(
             result: run.result,
             state: run.state,
         }),
-        Err(e) => Err(rejection(e, chain_id, block.base_fee)),
+        Err(e) => Err(rejection(e, chain_id, block, gas_limit)),
     }
 }
 
-fn rejection(error: EVMError<Infallible>, expected_chain: u64, base_fee: u64) -> Rejected {
+fn rejection(
+    error: EVMError<Infallible>,
+    expected_chain: u64,
+    block: &BlockInput,
+    gas_limit: u64,
+) -> Rejected {
     match error {
         EVMError::Transaction(invalid) => match invalid {
             InvalidTransaction::NonceTooLow { tx, state } => Rejected::NonceTooLow { tx, state },
@@ -227,12 +239,17 @@ fn rejection(error: EVMError<Infallible>, expected_chain: u64, base_fee: u64) ->
                     have: *balance,
                 }
             }
-            InvalidTransaction::GasPriceLessThanBasefee => Rejected::GasPriceTooLow { base_fee },
+            InvalidTransaction::GasPriceLessThanBasefee => Rejected::GasPriceTooLow {
+                base_fee: block.base_fee,
+            },
             InvalidTransaction::InvalidChainId => Rejected::ChainId {
                 tx: None,
                 expected: expected_chain,
             },
-            InvalidTransaction::CallerGasLimitMoreThanBlock => Rejected::GasLimitTooHigh,
+            InvalidTransaction::CallerGasLimitMoreThanBlock => Rejected::GasLimitTooHigh {
+                tx: gas_limit,
+                max: block.gas_limit,
+            },
             other => Rejected::Other(other.to_string()),
         },
         other => Rejected::Other(other.to_string()),

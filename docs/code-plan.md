@@ -196,6 +196,14 @@ Relay-compatible stubs: `eth_accounts → []`, uncles → `null`/`0x0`, `eth_min
 Errors: revert data returned as `{code:3, message:"execution reverted", data:0x…}` (Anvil/geth
 shape) so viem and ethers decode custom errors.
 
+Gas limit: **15,000,000**, the relay's `MAX_TRANSACTION_GAS_LIMIT` default
+(`docs/configuration.md:82`). `eth_sendRawTransaction` and `eth_sendTransaction` refuse anything
+above it with the relay's `-32005` and its wording, `Transaction gas limit '0x…' exceeds block gas
+limit '15000000'` (`docs/design/batch-request.md:157`); `eth_call` and `eth_estimateGas` are capped
+to it instead of refused, which is what the same relay line says it does. Blocks report the same
+number as their `gasLimit`. Hanvil ran a 30,000,000 limit until 2026-09-09, which let a
+transaction Hedera would have rejected pass locally.
+
 `eth_estimateGas` deviates from the "+10 %" this plan first specified. It bisects between the gas
 the unconstrained run reported and the block limit. The flat margin is wrong for any call that
 makes a call: EIP-150 forwards at most 63/64 of the remaining gas, so the caller must hold gas the

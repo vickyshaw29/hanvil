@@ -63,6 +63,11 @@ impl RpcError {
     pub fn server(detail: impl Into<String>) -> Self {
         Self::new(-32000, detail.into())
     }
+    /// -32005, the relay's code for a gas limit over what the network accepts
+    /// (relay `docs/design/batch-request.md:155`).
+    pub fn gas_limit_too_high(detail: impl Into<String>) -> Self {
+        Self::new(-32005, detail.into())
+    }
     /// Code 3 with revert data, the geth shape viem and ethers decode custom errors from.
     pub fn execution_reverted(message: String, revert_data: String) -> Self {
         Self {
@@ -94,6 +99,9 @@ impl From<state::Error> for RpcError {
         match error {
             state::Error::Decode(e) => Self::invalid_params(e.to_string()),
             state::Error::Rejected(Rejected::Other(text)) => Self::server(text),
+            state::Error::Rejected(high @ Rejected::GasLimitTooHigh { .. }) => {
+                Self::gas_limit_too_high(high.to_string())
+            }
             state::Error::Rejected(rejected) => Self::server(rejected.to_string()),
             other => Self::server(other.to_string()),
         }

@@ -396,3 +396,40 @@ fn block_time_mines_empty_blocks_on_an_interval() {
     }
     panic!("no empty block was mined within 10s at --block-time 1");
 }
+
+/// Hedera's relay refuses a transaction whose gas limit is over `MAX_TRANSACTION_GAS_LIMIT`
+/// (15,000,000 by default) and caps an `eth_call` that asks for more instead of refusing it
+/// (relay `docs/configuration.md:82`). Hanvil mined a 20,000,000-gas transaction, so a contract
+/// that deployed here would have been rejected on Hedera.
+#[test]
+fn a_gas_limit_over_the_network_maximum_is_refused_and_a_call_is_capped() {
+    let node = Node::boot();
+    let payee: Address = "0x00000000000000000000000000000000000003ea"
+        .parse()
+        .unwrap();
+
+    let raw = common::sign_legacy_with_gas(&node, Some(payee), Vec::new(), 1, 15_000_001);
+    let error = node.error("eth_sendRawTransaction", json!([raw]));
+    assert_eq!(error["code"], json!(-32005));
+    assert_eq!(
+        error["message"],
+        json!("Transaction gas limit '0xe4e1c1' exceeds block gas limit '15000000'")
+    );
+    assert_eq!(node.result("eth_blockNumber", json!([])), json!("0x0"));
+
+    // The maximum itself is accepted.
+    let receipt = send_with_gas(&node, Some(payee), Vec::new(), 1, 15_000_000);
+    assert_eq!(receipt["status"], json!("0x1"));
+    assert_eq!(receipt["gasUsed"], json!("0x5208"));
+
+    // A call asking for more is capped to the maximum, not refused.
+    let called = node.result(
+        "eth_call",
+        json!([{ "from": SENDER, "to": format!("{payee:#x}"), "gas": "0x1c9c380" }, "latest"]),
+    );
+    assert_eq!(called, json!("0x"));
+
+    // Blocks report the same number the rejection names.
+    let block = node.result("eth_getBlockByNumber", json!(["latest", false]));
+    assert_eq!(block["gasLimit"], json!("0xe4e1c0"));
+}
