@@ -1,6 +1,7 @@
 //! Command line surface. Reads like Anvil's on purpose.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
@@ -58,12 +59,31 @@ pub struct Args {
     #[arg(long)]
     pub no_sig_verify: bool,
 
+    /// Mine an empty block every N seconds. Transactions still mine their own block the moment
+    /// they arrive — this adds empty blocks so time advances on its own, it does not batch.
+    #[arg(long, value_name = "SECONDS")]
+    pub block_time: Option<u64>,
+
+    /// Load the chain from this file at boot, and write it back on exit. Genesis flags are
+    /// ignored when the file exists: the state in it decides the chain id and the accounts.
+    #[arg(long, value_name = "FILE")]
+    pub state: Option<PathBuf>,
+
+    /// Write the chain to this file on exit. Takes precedence over `--state` for the write.
+    #[arg(long, value_name = "FILE")]
+    pub dump_state: Option<PathBuf>,
+
     /// Print nothing.
     #[arg(long)]
     pub silent: bool,
 }
 
 impl Args {
+    /// Where the chain is written on exit, if anywhere.
+    pub fn dump_path(&self) -> Option<&PathBuf> {
+        self.dump_state.as_ref().or(self.state.as_ref())
+    }
+
     /// Genesis parameters derived from the flags.
     pub fn genesis(&self, now: Timestamp) -> Genesis {
         Genesis {
@@ -94,6 +114,12 @@ pub fn banner(
     println!("HAPI gRPC  {grpc}          node 0.0.3");
     if args.no_sig_verify {
         println!("           signature verification off (--no-sig-verify)");
+    }
+    if let Some(seconds) = args.block_time {
+        println!("           empty block every {seconds}s (--block-time)");
+    }
+    if let Some(path) = args.dump_path() {
+        println!("           state written to {} on exit", path.display());
     }
     println!();
 

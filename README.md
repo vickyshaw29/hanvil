@@ -11,13 +11,13 @@ without HBAR, and with a clean chain for every repair attempt.
 
 ## Measured
 
-On an M-series Mac, 2026-09-08, release build, median of five runs:
+On an M-series Mac, 2026-09-09, release build, median of five runs:
 
 | | hanvil | how it was measured |
 | --- | --- | --- |
 | Boot to listeners bound | 1 ms | the binary prints `Started in 1 ms` |
-| Resident memory | 4.1 MB | `ps -o rss= -p $(pgrep -x hanvil)` |
-| Binary | 6.8 MB | `ls -l target/release/hanvil` |
+| Resident memory | 4.2 MB | `ps -o rss= -p $(pgrep -x hanvil)` |
+| Binary | 7.1 MB | `ls -l target/release/hanvil` |
 | Accounts pre-funded | 30, 10,000 ℏ each | the boot banner |
 
 CI asserts the median boot stays under 100 ms on ubuntu and macos runners
@@ -49,6 +49,22 @@ Started in 1 ms
 
 The accounts, their ids and their keys are `hiero-local-node`'s, byte for byte, so anything
 configured for it works unchanged. They are development keys; they must never hold value.
+
+## Flags
+
+```
+--port 7546            --mirror-port 5551      --grpc-port 50211
+--host 127.0.0.1       --chain-id 298          --accounts 10
+--balance 10000        --gas-price 71          --no-sig-verify
+--block-time SECONDS   --state FILE            --dump-state FILE
+--silent
+```
+
+`--state FILE` reads the chain at boot if the file is there and writes it back on exit, so a
+restart continues where the last run stopped; the file decides the chain id and the accounts, and
+the genesis flags are ignored. `--dump-state FILE` writes without reading. `--block-time SECONDS`
+mines an empty block on that interval — transactions still mine their own block the moment they
+arrive, so this makes time move, it does not batch.
 
 ## Endpoints
 
@@ -97,7 +113,8 @@ Not emulated. Each of these is a deliberate hole, not an oversight:
   address is in `contractAccountId`.
 - Historical state. Only the head is served; asking for an older block is an error, not a guess.
 - Batch mining: `evm_setAutomine` and `evm_setIntervalMining` return `-32601` with the reason.
-- `anvil_dumpState`, `anvil_loadState`, `anvil_reset`, and `--state` persistence across restarts.
+- `anvil_dumpState`, `anvil_loadState` and `anvil_reset` over JSON-RPC. State does persist across
+  restarts, through `--state` / `--dump-state` on the command line.
 - The mirror's `alias` field is null — Hanvil mints EVM-address aliases, which `evm_address`
   already carries, not base32 key aliases.
 - A block's `hash` is a 32-byte keccak over its own fields, not a 48-byte record file hash, and

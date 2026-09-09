@@ -319,3 +319,80 @@ fn hts_system_contract_reverts_with_a_decodable_reason() {
         "Error(string) selector"
     );
 }
+
+/// `--state` writes the chain on exit and reads it back at boot, so a second run continues the
+/// first rather than starting from genesis.
+#[test]
+fn state_survives_a_restart() {
+    let file = std::env::temp_dir().join(format!("hanvil-state-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&file);
+    let path = file.to_str().unwrap();
+
+    let contract = {
+        let node = Node::boot_with(&["--state", path]);
+        let init_code = hex::decode(
+            counter_fixture()["bytecode"]
+                .as_str()
+                .unwrap()
+                .trim_start_matches("0x"),
+        )
+        .unwrap();
+        let receipt = send(&node, None, init_code, 0);
+        let contract: Address = receipt["contractAddress"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        send(&node, Some(contract), selector("increment()").to_vec(), 0);
+        assert_eq!(node.result("eth_blockNumber", json!([])), json!("0x2"));
+        node.shutdown();
+        contract
+    };
+
+    assert!(file.exists(), "--state wrote the chain on exit");
+
+    let node = Node::boot_with(&["--state", path]);
+    assert_eq!(
+        node.result("eth_blockNumber", json!([])),
+        json!("0x2"),
+        "the reloaded chain keeps its height"
+    );
+    let count_call = json!({
+        "to": format!("{contract:#x}"),
+        "data": format!("0x{}", hex::encode(selector("count()"))),
+    });
+    assert_eq!(
+        hex_u64(&node.result("eth_call", json!([count_call, "latest"]))),
+        1,
+        "contract storage came back with it"
+    );
+    assert_ne!(
+        node.result("eth_getCode", json!([format!("{contract:#x}"), "latest"])),
+        json!("0x"),
+        "so did the deployed code"
+    );
+    drop(node);
+    let _ = std::fs::remove_file(&file);
+}
+
+/// `--block-time` advances the chain on its own. Transactions are unaffected: they still mine
+/// immediately rather than waiting for the interval.
+#[test]
+fn block_time_mines_empty_blocks_on_an_interval() {
+    let node = Node::boot_with(&["--block-time", "1"]);
+    let start = hex_u64(&node.result("eth_blockNumber", json!([])));
+
+    // A transaction still mines at once, without waiting for the next tick.
+    send(&node, Some(SENDER.parse().unwrap()), Vec::new(), 1);
+    let after_tx = hex_u64(&node.result("eth_blockNumber", json!([])));
+    assert!(after_tx > start, "automine is unchanged by --block-time");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if hex_u64(&node.result("eth_blockNumber", json!([]))) > after_tx {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("no empty block was mined within 10s at --block-time 1");
+}

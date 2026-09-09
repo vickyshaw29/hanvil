@@ -30,8 +30,14 @@ pub struct Node {
 
 impl Node {
     pub fn boot() -> Self {
+        Self::boot_with(&[])
+    }
+
+    /// Boot with extra flags. Ports are always 0 so tests never collide.
+    pub fn boot_with(extra: &[&str]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_hanvil"))
             .args(["--port", "0", "--mirror-port", "0", "--grpc-port", "0"])
+            .args(extra)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
@@ -121,6 +127,25 @@ impl Node {
             response["result"]
         );
         response["error"].clone()
+    }
+}
+
+impl Node {
+    /// Ask the node to shut down the way a user would, so `--state` is written, and wait for it.
+    pub fn shutdown(mut self) {
+        // SIGINT is what `tokio::signal::ctrl_c` waits on; `kill` would skip the dump.
+        let _ = Command::new("kill")
+            .args(["-INT", &self.child.id().to_string()])
+            .status();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => std::thread::yield_now(),
+                Err(_) => return,
+            }
+        }
+        panic!("hanvil did not exit within 10s of SIGINT");
     }
 }
 

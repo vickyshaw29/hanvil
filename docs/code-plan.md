@@ -184,7 +184,7 @@ with a message.
 
 Implemented for real: `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getCode`,
 `eth_getStorageAt`, `eth_getTransactionCount`, `eth_gasPrice`, `eth_maxPriorityFeePerGas` (0x0),
-`eth_feeHistory` (flat), `eth_estimateGas` (transact without commit, +10 %), `eth_call`,
+`eth_feeHistory` (flat), `eth_estimateGas` (see below), `eth_call`,
 `eth_sendRawTransaction`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`,
 `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getBlockReceipts`, `eth_getLogs` (address +
 topics + block range), `eth_getBlockTransactionCountBy{Hash,Number}`,
@@ -195,6 +195,15 @@ Relay-compatible stubs: `eth_accounts → []`, uncles → `null`/`0x0`, `eth_min
 (`research.md §5`). Cheats per `research.md §11`.
 Errors: revert data returned as `{code:3, message:"execution reverted", data:0x…}` (Anvil/geth
 shape) so viem and ethers decode custom errors.
+
+`eth_estimateGas` deviates from the "+10 %" this plan first specified. It bisects between the gas
+the unconstrained run reported and the block limit. The flat margin is wrong for any call that
+makes a call: EIP-150 forwards at most 63/64 of the remaining gas, so the caller must hold gas the
+callee never spends, and the reported `gas_used` can be well under the limit the transaction needs
+to pass. A margin large enough for a deep call chain would waste gas on a plain transfer. The
+bisection asks the question directly — the smallest limit at which the call still succeeds — and
+returns the block limit when even that fails, so a caller sees a gas error rather than a silent
+underestimate.
 
 ## 8. Mirror REST surface
 

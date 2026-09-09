@@ -16,6 +16,7 @@ use revm::database::{AccountState, CacheDB, DbAccount};
 use revm::database_interface::EmptyDB;
 use revm::primitives::TxKind;
 use revm::state::{AccountInfo, Bytecode};
+use serde::{Deserialize, Serialize};
 
 pub use accounts::{Account, EntityId, Key};
 pub use blocks::{
@@ -73,6 +74,9 @@ pub enum Error {
     /// `eth_estimateGas` could not find a passing gas limit.
     #[error("execution fails at every gas limit up to {0}")]
     NoGasEstimate(u64),
+    /// A state file could not be read or written.
+    #[error("chain state: {0}")]
+    State(String),
 }
 
 /// First entity id handed out to user accounts. Matches hiero-local-node.
@@ -110,7 +114,7 @@ pub const EXCHANGE_RATE_VALID_SECS: u64 = 86_400;
 
 /// Metadata for a contract entity; code and storage live in the EVM database. Read by the mirror
 /// REST (`/contracts/{id}`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Contract {
     /// EVM address.
     pub address: Address,
@@ -118,8 +122,9 @@ pub struct Contract {
     pub created_block: u64,
 }
 
-/// In-memory chain. Cloning it is how snapshots work.
-#[derive(Debug, Clone)]
+/// In-memory chain. Cloning it is how snapshots work, and `--state` / `--dump-state` are the
+/// same fields written to a file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chain {
     chain_id: u64,
     gas_price: Tinybar,
@@ -199,6 +204,18 @@ impl Chain {
             logs_bloom: Bloom::ZERO,
         });
         Ok(chain)
+    }
+
+    /// Read a chain written by [`Chain::to_json`]. The file decides the chain id and every
+    /// account, so the genesis flags are not consulted.
+    pub fn from_json(json: &str) -> Result<Self, Error> {
+        serde_json::from_str(json).map_err(|e| Error::State(e.to_string()))
+    }
+
+    /// The whole chain as JSON, snapshots included, so `--state` restores what `evm_revert`
+    /// could still reach.
+    pub fn to_json(&self) -> Result<String, Error> {
+        serde_json::to_string(self).map_err(|e| Error::State(e.to_string()))
     }
 
     fn insert_account(&mut self, account: Account) {
