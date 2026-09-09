@@ -71,6 +71,76 @@ pub fn parse_transaction_id(text: &str) -> Result<(EntityId, Timestamp), Error> 
     ))
 }
 
+/// One `timestamp=` clause: an optional comparison operator and the instant it compares against
+/// (`openapi.yml:5294` timestampQueryParam, pattern `^((eq|gt|gte|lt|lte|ne):)?\d{1,10}(\.\d{1,9})?$`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimestampFilter {
+    operator: Operator,
+    at: Timestamp,
+}
+
+/// The comparisons the mirror accepts on a timestamp. No operator means `eq`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Operator {
+    Eq,
+    Ne,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+}
+
+impl TimestampFilter {
+    /// Whether a consensus timestamp satisfies this clause.
+    pub fn matches(&self, at: Timestamp) -> bool {
+        match self.operator {
+            Operator::Eq => at == self.at,
+            Operator::Ne => at != self.at,
+            Operator::Gt => at > self.at,
+            Operator::Gte => at >= self.at,
+            Operator::Lt => at < self.at,
+            Operator::Lte => at <= self.at,
+        }
+    }
+}
+
+/// Parse one `timestamp=` value. Seconds alone mean nanosecond zero, so `gte:5` starts at the
+/// top of that second; a fractional part is left-aligned, so `.1` is 100,000,000 nanoseconds.
+pub fn parse_timestamp_filter(text: &str) -> Result<TimestampFilter, Error> {
+    let invalid = || Error::invalid_parameter("timestamp");
+    let (operator, value) = match text.split_once(':') {
+        Some(("eq", rest)) => (Operator::Eq, rest),
+        Some(("ne", rest)) => (Operator::Ne, rest),
+        Some(("gt", rest)) => (Operator::Gt, rest),
+        Some(("gte", rest)) => (Operator::Gte, rest),
+        Some(("lt", rest)) => (Operator::Lt, rest),
+        Some(("lte", rest)) => (Operator::Lte, rest),
+        Some(_) => return Err(invalid()),
+        None => (Operator::Eq, text),
+    };
+
+    let (secs, nanos) = match value.split_once('.') {
+        None => (value, "0"),
+        Some((secs, nanos)) if !nanos.is_empty() && nanos.len() <= 9 => (secs, nanos),
+        Some(_) => return Err(invalid()),
+    };
+    if secs.is_empty() || secs.len() > 10 || !secs.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(invalid());
+    }
+    if !nanos.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(invalid());
+    }
+    // `.1` is a tenth of a second, so the fraction is padded on the right, not the left.
+    let padded = format!("{nanos:0<9}");
+    Ok(TimestampFilter {
+        operator,
+        at: Timestamp {
+            secs: secs.parse().map_err(|_| invalid())?,
+            nanos: padded.parse().map_err(|_| invalid())?,
+        },
+    })
+}
+
 /// What a path segment that names an entity can be.
 pub enum Reference {
     /// `0.0.N`, or a bare `N`.
@@ -178,6 +248,50 @@ mod tests {
         assert_eq!(payer, EntityId(1012));
         assert_eq!(start.nanos, 7);
         assert!(parse_transaction_id("0.0.1012@1700000000.000000007").is_err());
+    }
+
+    #[test]
+    fn timestamp_clauses_carry_their_operator() {
+        let at = |secs, nanos| Timestamp { secs, nanos };
+
+        // Seconds alone mean nanosecond zero.
+        let eq = parse_timestamp_filter("1700000000").expect("bare seconds");
+        assert!(eq.matches(at(1_700_000_000, 0)));
+        assert!(!eq.matches(at(1_700_000_000, 1)));
+
+        // A fraction is left-aligned: `.1` is a tenth of a second, not one nanosecond.
+        let tenth = parse_timestamp_filter("eq:1700000000.1").expect("fraction");
+        assert!(tenth.matches(at(1_700_000_000, 100_000_000)));
+
+        let gte = parse_timestamp_filter("gte:1700000000.000000005").expect("gte");
+        assert!(gte.matches(at(1_700_000_000, 5)));
+        assert!(gte.matches(at(1_700_000_001, 0)));
+        assert!(!gte.matches(at(1_700_000_000, 4)));
+
+        let lt = parse_timestamp_filter("lt:1700000000").expect("lt");
+        assert!(lt.matches(at(1_699_999_999, 999_999_999)));
+        assert!(!lt.matches(at(1_700_000_000, 0)));
+
+        let ne = parse_timestamp_filter("ne:1700000000").expect("ne");
+        assert!(!ne.matches(at(1_700_000_000, 0)));
+        assert!(ne.matches(at(1_700_000_001, 0)));
+    }
+
+    #[test]
+    fn a_timestamp_the_spec_rejects_is_a_400() {
+        for bad in [
+            "since:1700000000",      // not one of the six operators
+            "gte:",                  // no value
+            "17000000000000",        // more than 10 digits of seconds
+            "1700000000.1234567890", // more than 9 digits of nanos
+            "1700000000.",           // trailing dot
+            "abc",
+        ] {
+            assert!(
+                parse_timestamp_filter(bad).is_err(),
+                "`{bad}` should be refused"
+            );
+        }
     }
 
     #[test]

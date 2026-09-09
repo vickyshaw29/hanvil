@@ -12,8 +12,6 @@ mod submitted;
 mod topics;
 mod transactions;
 
-use std::collections::HashMap;
-
 use axum::Router;
 use axum::extract::Query;
 use axum::http::StatusCode;
@@ -92,8 +90,10 @@ impl IntoResponse for Error {
     }
 }
 
-/// Query string as the mirror spells it: `account.id`, `transactiontype`, `limit`, `order`.
-pub struct Params(HashMap<String, String>);
+/// Query string as the mirror spells it: `account.id`, `transactiontype`, `limit`, `order`,
+/// `timestamp`. Kept as pairs rather than a map because `timestamp` is `explode: true` in the
+/// spec and the range idiom repeats it: `?timestamp=gte:X&timestamp=lt:Y`.
+pub struct Params(Vec<(String, String)>);
 
 /// Listing direction (`openapi.yml:5054`).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -106,7 +106,18 @@ pub enum Order {
 
 impl Params {
     fn get(&self, name: &str) -> Option<&str> {
-        self.0.get(name).map(String::as_str)
+        self.0
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// Every value given for `name`, in the order the caller wrote them.
+    fn all(&self, name: &str) -> impl Iterator<Item = &str> {
+        self.0
+            .iter()
+            .filter(move |(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
     }
 
     /// `limit`: default 25, 1..=100 (`openapi.yml:4904`).
@@ -136,6 +147,14 @@ impl Params {
             Some("false") => Ok(false),
             Some(_) => Err(Error::invalid_parameter(name)),
         }
+    }
+
+    /// Every `timestamp=` clause, in the order given. Repeats are how a range is expressed:
+    /// `?timestamp=gte:1700000000&timestamp=lt:1700000001` (`openapi.yml:5294`).
+    fn timestamps(&self) -> Result<Vec<shapes::TimestampFilter>, Error> {
+        self.all("timestamp")
+            .map(shapes::parse_timestamp_filter)
+            .collect()
     }
 
     /// An entity-id filter such as `account.id=0.0.1002`. The mirror also accepts `gt:`/`lt:`
@@ -203,10 +222,10 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for Params {
         parts: &mut axum::http::request::Parts,
         state: &S,
     ) -> Result<Self, Self::Rejection> {
-        let Query(map) = Query::<HashMap<String, String>>::from_request_parts(parts, state)
+        let Query(pairs) = Query::<Vec<(String, String)>>::from_request_parts(parts, state)
             .await
             .map_err(|_| Error::invalid_parameter("query"))?;
-        Ok(Self(map))
+        Ok(Self(pairs))
     }
 }
 

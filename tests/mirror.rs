@@ -315,3 +315,61 @@ fn blocks_and_network_answer_what_a_client_bootstraps_with() {
     assert_eq!(status, 200);
     assert_eq!(rate["current_rate"]["hbar_equivalent"], json!(30_000));
 }
+
+/// `?timestamp=` with the mirror's comparison operators, including the repeated form that
+/// expresses a range (`openapi.yml:5294`, `explode: true`).
+#[test]
+fn transactions_filter_by_timestamp_and_by_range() {
+    let node = Node::boot();
+    let fresh: Address = "0x00000000000000000000000000000000000003ea"
+        .parse()
+        .unwrap();
+    for _ in 0..3 {
+        send(&node, Some(fresh), Vec::new(), 1);
+    }
+
+    let (status, all) = node.get("/api/v1/transactions?order=asc");
+    assert_eq!(status, 200);
+    let stamps: Vec<String> = all["transactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tx| tx["consensus_timestamp"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(stamps.len(), 3, "three transfers were mined");
+
+    // eq: exactly the one.
+    let (status, one) = node.get(&format!("/api/v1/transactions?timestamp={}", stamps[1]));
+    assert_eq!(status, 200);
+    assert_eq!(one["transactions"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        one["transactions"][0]["consensus_timestamp"],
+        json!(stamps[1])
+    );
+
+    // A repeated clause is a range: [first, last), so the middle one and nothing else.
+    let (status, ranged) = node.get(&format!(
+        "/api/v1/transactions?timestamp=gt:{}&timestamp=lt:{}&order=asc",
+        stamps[0], stamps[2]
+    ));
+    assert_eq!(status, 200);
+    let inside = ranged["transactions"].as_array().unwrap();
+    assert_eq!(inside.len(), 1, "gt:first and lt:last leaves the middle");
+    assert_eq!(inside[0]["consensus_timestamp"], json!(stamps[1]));
+
+    // gte: keeps the boundary that gt: dropped.
+    let (status, from_first) = node.get(&format!(
+        "/api/v1/transactions?timestamp=gte:{}&order=asc",
+        stamps[0]
+    ));
+    assert_eq!(status, 200);
+    assert_eq!(from_first["transactions"].as_array().unwrap().len(), 3);
+
+    // An operator the spec does not list is a 400, not an empty page.
+    let (status, error) = node.get("/api/v1/transactions?timestamp=since:1700000000");
+    assert_eq!(status, 400);
+    assert_eq!(
+        error["_status"]["messages"][0]["message"],
+        json!("Invalid parameter: timestamp")
+    );
+}

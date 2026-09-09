@@ -26,6 +26,7 @@ pub async fn list(State(chain): State<Shared>, params: Params) -> Answer {
     let limit = params.limit()?;
     let order = params.order(Order::Desc)?;
     let account = params.entity_filter("account.id")?;
+    let timestamps = params.timestamps()?;
     let kind = params.get("transactiontype").map(str::to_uppercase);
     let result = match params.get("result") {
         None => None,
@@ -47,6 +48,7 @@ pub async fn list(State(chain): State<Shared>, params: Params) -> Answer {
         .filter(|entry| kind.as_deref().is_none_or(|kind| kind == entry.name))
         .filter(|entry| result.is_none_or(|want| want == entry.succeeded))
         .filter(|entry| account.is_none_or(|id| entry.involves(id)))
+        .filter(|entry| timestamps.iter().all(|clause| clause.matches(entry.at)))
         .map(|entry| entry.body)
         .collect();
     Ok(Json(json!({
