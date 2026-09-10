@@ -1,24 +1,33 @@
 # hanvil
 
-A local Hedera network in one binary. It boots in 1 ms, prints thirty pre-funded accounts, and
-serves the three protocols a Hedera app already speaks — JSON-RPC on 7546, mirror node REST on
-5551, HAPI gRPC on 50211 — from one in-memory chain, on the ports `hiero-local-node` uses.
-`@hiero-ledger/sdk`, viem, hardhat and foundry connect to it unchanged. Unlike the Docker stack
-it can snapshot the whole chain and put it back.
+A local Hedera network and a coding-agent harness in one binary. `hanvil` boots in 1 ms, prints
+thirty pre-funded accounts, and serves the three protocols a Hedera app already speaks — JSON-RPC
+on 7546, mirror node REST on 5551, HAPI gRPC on 50211 — from one in-memory chain, on the ports
+`hiero-local-node` uses. `@hiero-ledger/sdk`, viem, hardhat and foundry connect to it unchanged.
+Unlike the Docker stack it can snapshot the whole chain and put it back.
 
-I built it so `hedera-harness` can run its on-chain validation tier without a testnet account,
-without HBAR, and with a clean chain for every repair attempt.
+`hanvil run` is `hedera-harness` ported to Rust and pointed at that chain. It drives a coding
+agent through a recipe — generate, assert, chain, smoke, evaluate — with the network in the same
+process, so every attempt starts on a chain snapshot, a failed attempt is reverted, the recipe
+asserts on accounts, contracts and topics without a mirror round trip, and any attempt's chain
+can be booted again from its state dump. No testnet account, no HBAR, no credentials.
 
 ## Measured
 
-On an M-series Mac, 2026-09-09, release build, median of five runs:
+On an M-series Mac, 2026-09-10, release build, median of five runs:
 
 | | hanvil | how it was measured |
 | --- | --- | --- |
 | Boot to listeners bound | 1 ms | the binary prints `Started in 1 ms` |
-| Resident memory | 4.3 MB | `ps -o rss= -p $(pgrep -x hanvil)` |
-| Binary | 7.3 MB | `ls -l target/release/hanvil` |
+| Resident memory | 5.0 MB | `ps -o rss= -p $(pgrep -x hanvil)` |
+| Binary | 9.6 MB | `ls -l target/release/hanvil` |
 | Accounts pre-funded | 30, 10,000 ℏ each | the boot banner |
+| `hanvil doctor`, every check | 65 ms | `time hanvil doctor` in a copy of `tests/harness` |
+| `hanvil run`, one attempt, the fixture's fake agent | 0.23 s | `time hanvil run --no-skills` in the same copy: node boot, signer, snapshot, agent, ASSERT, CHAIN, state dump, checkpoint commit, sweep |
+| Signer provisioned on the chain | 158 µs | `chain_signer_provisioned.durationMicros` in `.harness/runs/harness.log.jsonl` |
+| Chain snapshot before an attempt | 5 µs | `chain_snapshot_taken.durationMicros`, same log |
+| Chain state dump for replay | 35 KB in 139 µs | `chain_state_written`, same log |
+| Full run with `claude` on `examples/hcs-receipts-api` | 9 min 32 s, 2 attempts | `report.json.durationMs`; the breakdown is under [Harness](#harness) |
 
 CI asserts the median boot stays under 100 ms on ubuntu and macos runners
 (`.github/workflows/ci.yml`). The comparison against `hiero-local-node` is not measured yet, so
@@ -152,6 +161,20 @@ Not emulated. Each of these is a deliberate hole, not an oversight:
   transaction, so nothing is ever pending.
 - Forking testnet or mainnet state. Hanvil starts from its own genesis every time and makes no
   outbound calls; `--state` replays a file Hanvil itself wrote.
+- `hanvil run` with `network: testnet`. Preflight and `doctor` refuse it with `Use network:
+  local, or run this recipe with hedera-harness.`; the two PRs below are the testnet path.
+  `mainnet` is refused by the recipe loader with upstream's own `Mainnet is not allowed.`
+- `hanvil run` with `agent: cursor`. The preset and its `.cursor/mcp.json` delivery are ported
+  line for line and have not been run against a Cursor install.
+- SMOKE's HTTP status on a Chromium older than 109. It is read from
+  `PerformanceNavigationTiming.responseStatus`; where that is absent the status check is skipped
+  and the render, console and forbidden-text checks still run.
+- A hermetic harness. `hanvil run` vendors skills by cloning `hedera-dev/hedera-skills`
+  (`--no-skills` turns it off), `hanvil init` clones `scaffold-hbar`, and the agent CLI, `npx`
+  and the app's own commands make whatever calls they make. The node itself still opens no
+  outbound socket.
+- Windows. Children are killed by process group with `pkill -g`; the harness runs on macOS here
+  and on ubuntu in CI.
 
 ### System contracts
 
@@ -184,10 +207,145 @@ address, and Hanvil does not etch an address it cannot cite.
 Etched bytecode, not a precompile: the behaviour a caller sees is identical, and it survives
 `evm_snapshot` / `evm_revert` because it is part of the chain state that gets cloned.
 
-## Harness integration
+## Harness
 
-`hedera-harness` runs its on-chain validation tier against Hanvil with no credentials. Measured
-2026-09-08, five runs, 3.6-4.3 s wall clock:
+`hanvil run` reads a `hedera-harness` schema v3 recipe (`.harness/spec.yaml` by default), boots
+the network in-process, checks out a `harness/run-<name>-<hex>` branch, and runs attempts until
+the recipe passes or `maxAttempts` is spent. An attempt is five stages; a stage that fails skips
+the ones after it, and a failed attempt's findings become the next attempt's repair prompt.
+
+| Stage | What runs | Result |
+| --- | --- | --- |
+| 1 GENERATE | the agent CLI — `agent: claude` or `cursor`, or any `generator.command` — with the PRD as its prompt | `logs/generator-attempt-N.log` and `.activity.log` |
+| 2 ASSERT | required and forbidden files, `validators/static.json`, the secret scan, `validators/commands.json` | `logs/validation-attempt-N.json` |
+| 3 CHAIN | `chainValidation.deploy` commands, then `advanceTimeSeconds`, then `assert[]` on the in-process chain | findings `chain:<i>:<kind>` in the same file |
+| 4 SMOKE | the app's dev server, then each route of `validators/playwright-smoke.yaml` in headless Chromium over `@playwright/mcp` | `logs/playwright-gate-attempt-N.json` |
+| 5 EVALUATE | a validator agent with the same Playwright MCP server, judging `eval.json` in the browser | `logs/evaluation-attempt-N.json` |
+
+Before GENERATE the chain is snapshotted — `Chain::snapshot()`, a clone under the lock. After a
+failed attempt with budget left it is reverted, so the repair starts on the chain the failed
+attempt started on, and the repair prompt says so. After every validation the chain is written to
+`logs/chain-state-attempt-N.json`: `hanvil --state <that file>` boots the network as the attempt
+left it, and `hanvil run --continue <branch>` reloads the last one. Every subprocess — agent,
+deploy commands, dev server, validator — receives `HANVIL_RPC_URL`, `HANVIL_MIRROR_URL`,
+`HANVIL_GRPC_URL`, `HEDERA_NETWORK=local` and `HARNESS_SIGNER_{ACCOUNT_ID,EVM_ADDRESS,PRIVATE_KEY}`,
+and the generator prompt carries a `## Local Hedera network` section saying the same.
+
+```
+cp -R examples/hcs-receipts-api /tmp/receipts && cd /tmp/receipts
+git init -q -b main && git add -A && git commit -qm seed
+hanvil doctor          # ✔ on every line under `env -i PATH="$PATH" HOME="$HOME"`
+hanvil run             # needs `claude` on PATH, Node 20+ and npx
+```
+
+The recipe is schema v3 as `hedera-harness` reads it — the same keys, defaults, error strings,
+prompts and artifact layout, ported from `dev` @ `587a2f3` and cited by file and line in
+`src/harness/` — with four additions under `chainValidation`, all optional:
+
+```yaml
+chainValidation:
+  enabled: true
+  network: local            # no operator block; the harness funds the signer from 0.0.1002
+  fundingHbar: 50
+  deploy:
+    commands:
+      - { name: seed, command: node scripts/seed.js, timeoutMs: 60000 }
+  snapshotPerAttempt: true  # false keeps chain state across attempts, as the TypeScript does
+  advanceTimeSeconds: 0     # evm_increaseTime before the assertions
+  assert:                   # each one that fails is a finding, id chain:<i>:<kind>
+    - { topic: created, messagesAtLeast: 3 }        # or topic: 0.0.N
+    - { account: signer, minBalanceHbar: 40 }       # or 0.0.N / 0x…; exists: / deleted:
+    - { transactions: { type: CONSENSUSSUBMITMESSAGE, payer: signer, atLeast: 3 } }
+    # - { contract: 0x…, deployed: true }
+```
+
+The first run on the example, 2026-09-10, `agent: claude`, `--max-attempts 3`, as printed:
+
+```
+[hanvil] Chain signer provisioned — 0.0.1032 (0xb2e10a30e626e1e3dbf016fff7ab7528c43a4439)
+[hanvil] Stage 1/5 GENERATE — attempt 1 [opus]
+[hanvil] Chain snapshot taken — attempt 1 — 0x0
+[hanvil] Stage 2/5 ASSERT
+[hanvil] Stage 3/5 CHAIN
+[hanvil] Chain deploy — seed — node scripts/seed.js
+[hanvil] Chain assertions — 3 of 3 passed
+[hanvil] Stage 4/5 SMOKE — booting dev server
+[hanvil] Stage 5/5 EVALUATE — skipped — smoke gate failed
+[hanvil] Attempt 1 FAILED — 1 open, 1 new
+[hanvil] Chain state written — attempt 1
+[hanvil] Workspace committed — harness: run attempt 1 failed @ 40d2bf3e
+[hanvil] Chain reverted — attempt 2 starts on the state attempt 1 started on
+[hanvil] Stage 1/5 GENERATE — repair, attempt 2 [opus, escalated — last attempt fixed nothing]
+[hanvil] Chain snapshot taken — attempt 2 — 0x1
+[hanvil] Stage 2/5 ASSERT
+[hanvil] Stage 3/5 CHAIN
+[hanvil] Chain assertions — 3 of 3 passed
+[hanvil] Stage 4/5 SMOKE — booting dev server
+[hanvil] Stage 5/5 EVALUATE — http://127.0.0.1:3000
+[hanvil] Attempt 2 PASSED — All three checklist assertions verified in-browser via Playwright MCP …
+[hanvil] Run finished: PASSED — 0 open, 1 fixed
+[hanvil] Chain signer swept — 0.0.1032
+Run PASSED
+```
+
+The one finding was `playwright:route:home:console`: the page had no favicon, Chromium logged the
+404 as a console error, and the SMOKE gate counts that as upstream does. The repair added the
+route. Where the 9 min 32 s went, from the `harness.log.jsonl` timestamps and `report.json`:
+
+| | attempt 1 | attempt 2 |
+| --- | --- | --- |
+| GENERATE (`claude`, `opus`) | 354.1 s | 121.8 s |
+| ASSERT (`npm install`, `node --check`) | 3.8 s | 0.06 s — install skipped, lockfile fingerprint unchanged |
+| CHAIN (`node scripts/seed.js`, three assertions) | 0.4 s | 0.3 s |
+| SMOKE (two routes, headless Chromium) | 6.0 s | 6.2 s |
+| EVALUATE (validator agent over Playwright MCP) | skipped | 75.5 s |
+| state dump, checkpoint commit, revert | 73 ms | 74 ms, no revert |
+
+The attempt-2 dump is 43,643 bytes; `hanvil --state <it> --port 0` prints `Started in 0 ms` and
+its mirror answers `GET /api/v1/topics/0.0.1033/messages` with the six messages the app wrote.
+
+Against the TypeScript harness, on the same recipe:
+
+- A snapshot before every attempt and a revert after a failed one. On testnet there is nothing
+  to revert; PR #48 below does it over JSON-RPC against a local node; here it is a clone under
+  the lock, 5 µs.
+- `assert[]` in the recipe, evaluated on the chain struct. The TypeScript has no mirror client;
+  it hands the validator agent a mirror URL.
+- Replay of any attempt's chain with `--state`.
+- No operator id, no key, no environment variable. `chainValidation` is two lines.
+- An activity log for `claude` as well as `cursor`: the `TOOL START edit /…/lib/hedera.js`
+  lines are parsed out of `stream-json`.
+- No `npm install` for the harness. Node is needed by the app under test and by
+  `@playwright/mcp`, not by `hanvil`.
+
+Five deviations from the TypeScript, each recorded in `docs/code-plan.md` §16: the `claude`
+preset's idle timeout is 600 s, not 90 s (a `Bash` tool call is silent until it returns);
+`CLAUDECODE` and `CLAUDE_CODE_*` are stripped from the agent's environment; a dev server that
+never prints `Local:` is accepted when `server.url` answers; `@playwright/mcp` is pinned at
+0.0.80 and driven over stdio by the harness itself for SMOKE; after a revert the repair prompt
+gains one sentence saying the chain was reset.
+
+```
+hanvil run [SPEC] [--max-attempts N] [--new | --continue BRANCH] [--workspace DIR] [--no-skills]
+hanvil doctor [SPEC] [--recipe-only]
+hanvil validate [SPEC]              # ASSERT only: no agent, no node
+hanvil validate-semantic [SPEC]     # EVALUATE only, against the workspace as it is
+hanvil init [DIR] [--repo URL] [--ref REF] [--template NAME] [--skip-install]
+```
+
+The node flags apply to every subcommand. `run` binds 7546, 5551 and 50211 unless a flag or the
+recipe's `chainValidation.local` says otherwise, so `Client.forLocalNode()` in the generated app
+works untouched. Artifacts land under `.harness/runs/<timestamp>-<name>/` in the upstream layout
+— `session.json`, `status.json`, `prompts/`, `logs/`, `reports/report.json` — plus
+`logs/chain-state-attempt-N.json`; the signer's private key reads `<redacted by hanvil>` in
+every prompt file, and `.harness/runs/harness.log.jsonl` records every event with its timestamp
+and, for the chain events, its `durationMicros`. Ctrl-C kills the agent, the dev server and the
+browser by process group, writes `status.json` with `"phase": "interrupted"`, and exits 130.
+
+## The TypeScript harness on hanvil
+
+The upstream `hedera-harness` also runs against Hanvil, over the network, with no credentials.
+Measured 2026-09-08, five runs, 3.6-4.3 s wall clock:
 
 ```
 [hedera-harness] Chain signer provisioned - 0.0.1033 (0x61a73ab7...)
@@ -241,13 +399,22 @@ JSON-RPC is visible to the mirror in the same millisecond. `evm_snapshot` clones
 ```
  JSON-RPC :7546 ─┐
  mirror   :5551 ─┼─→ RwLock<Chain> ─→ accounts · blocks · receipts · logs · topics ·
- HAPI     :50211 ┘                    HAPI records · revm CacheDB
-                                      (balances authoritative in tinybar)
+ HAPI     :50211 ┤                    HAPI records · revm CacheDB
+ hanvil run ─────┘                    (balances authoritative in tinybar)
+   │ spawns: agent CLI · git · deploy commands · dev server · @playwright/mcp
 ```
 
-`revm` executes, `alloy` decodes and recovers senders, `axum` serves all three listeners, `tonic`
-and `prost` speak HAPI over the 130 vendored protobuf files, `clap` reads the flags. No outbound network calls — the binary never fetches
-anything. The build is laid out in `docs/code-plan.md`; every claim about how Hedera's own tooling
-behaves is pinned to a file and line in `docs/research.md`.
+`hanvil run` holds the same lock. The signer, the snapshot, the revert, the assertions and the
+state dump are method calls on `Chain` under `write()` or `read()`, never across an `.await`;
+the agent, `git`, the deploy commands, the dev server and the browser are subprocesses in their
+own process groups, and the harness reads their pipes.
 
-MIT. Vendored HAPI protobufs are Apache-2.0 — see NOTICE.
+`revm` executes, `alloy` decodes and recovers senders, `axum` serves all three listeners, `tonic`
+and `prost` speak HAPI over the 130 vendored protobuf files, `clap` reads the flags,
+`serde_yaml_ng` reads the recipe, `regex` runs the secret scan. The node makes no outbound
+network calls — it never fetches anything; the processes `hanvil run` spawns are listed under
+[Harness](#harness). The build is laid out in `docs/code-plan.md`; every claim about how Hedera's
+own tooling behaves is pinned to a file and line in `docs/research.md`.
+
+MIT. Vendored HAPI protobufs are Apache-2.0; the harness's prompt templates, recipe schema,
+skeletons and console strings derive from `hedera-dev/hedera-harness`, MIT — see NOTICE.
