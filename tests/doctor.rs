@@ -130,3 +130,59 @@ fn a_missing_prd_and_a_testnet_recipe_are_named() {
     assert!(report.contains("3 check(s) failed"), "{report}");
     let _ = std::fs::remove_dir_all(repo);
 }
+
+/// The browser probe needs `npx` and a Chromium or Chrome; without them the test says so.
+fn browser_available() -> bool {
+    let npx = Command::new("sh")
+        .args(["-c", "command -v npx"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let chromium = home.join("Library/Caches/ms-playwright").exists()
+        || home.join(".cache/ms-playwright").exists();
+    let chrome = Command::new("sh")
+        .args(["-c", "command -v google-chrome || command -v google-chrome-stable || test -d '/Applications/Google Chrome.app'"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    npx && (chromium || chrome)
+}
+
+#[test]
+fn a_recipe_with_a_smoke_gate_gets_its_browser_probed() {
+    if !browser_available() {
+        eprintln!("skipped: the browser probe needs npx and a Chromium or Chrome on this machine");
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("hanvil-doctor-smoke-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    copy_dir(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/harness-smoke"),
+        &root,
+    );
+    for args in [
+        vec!["init", "-q", "-b", "main"],
+        vec!["config", "user.email", "doctor@hanvil"],
+        vec!["config", "user.name", "doctor"],
+        vec!["add", "-A"],
+        vec!["commit", "-q", "--no-gpg-sign", "-m", "fixture"],
+    ] {
+        assert!(
+            Command::new("git")
+                .args(&args)
+                .current_dir(&root)
+                .status()
+                .expect("git")
+                .success()
+        );
+    }
+    let (ok, report) = doctor(&[], &root);
+    assert!(ok, "{report}");
+    assert!(
+        report.contains("  ✔ validators.playwright — present"),
+        "{report}"
+    );
+    // EVALUATE is off in this recipe, so the SMOKE-only browser check runs and navigates.
+    assert!(report.contains("  ✔ SMOKE browser — "), "{report}");
+    assert!(report.ends_with("Ready to run.\n"), "{report}");
+    let _ = std::fs::remove_dir_all(root);
+}
