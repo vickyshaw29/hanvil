@@ -399,7 +399,7 @@ pub(crate) enum AccountRef {
 /// A topic named in a chain assertion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TopicRef {
-    /// The newest topic created since the attempt's snapshot.
+    /// The newest topic on the chain — the one the attempt's deploy or app created last.
     Created,
     /// `0.0.N`.
     Id(String),

@@ -459,7 +459,7 @@ pub(crate) fn run_assertions(
             ChainAssertion::Topic {
                 topic,
                 messages_at_least,
-            } => check_topic(chain, topic, *messages_at_least, since),
+            } => check_topic(chain, topic, *messages_at_least),
             ChainAssertion::Transactions {
                 kind,
                 payer,
@@ -519,22 +519,19 @@ fn check_account(
     None
 }
 
-fn check_topic(
-    chain: &Chain,
-    which: &TopicRef,
-    messages_at_least: u64,
-    since: &Mark,
-) -> Option<String> {
+fn check_topic(chain: &Chain, which: &TopicRef, messages_at_least: u64) -> Option<String> {
     let (label, topic) = match which {
+        // The newest topic on the chain, not the newest since the mark: after a revert the two
+        // are the same, and on `--continue` the app reuses the topic the reloaded chain already
+        // holds rather than creating one.
         TopicRef::Created => {
             let newest = chain
                 .hapi_records()
-                .skip(since.records)
                 .filter_map(|record| record.created_topic)
                 .last();
             match newest {
                 Some(id) => (id.to_string(), chain.topic(id)),
-                None => return Some("no topic was created during this attempt".to_string()),
+                None => return Some("no topic exists on the chain".to_string()),
             }
         }
         TopicRef::Id(id) => (
@@ -779,7 +776,7 @@ mod tests {
         );
         assert_eq!(
             findings[4].message,
-            "Chain assertion 7 (topic) failed: no topic was created during this attempt"
+            "Chain assertion 7 (topic) failed: no topic exists on the chain"
         );
         assert!(
             findings[5].message.contains("topic 0.0.5 does not exist"),
