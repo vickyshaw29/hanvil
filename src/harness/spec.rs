@@ -521,6 +521,21 @@ impl Spec {
     pub(crate) fn validator_enabled(&self) -> bool {
         self.validator.as_ref().is_some_and(|v| v.enabled)
     }
+
+    /// `sliceSelection.ts:28-45`: the PRD and eval pair for an increment. A scalar `eval`
+    /// grades every increment; a list is 1:1. An index past the end clamps to the last.
+    pub(crate) fn slice(&self, index: usize) -> (PathBuf, Option<PathBuf>) {
+        let index = index.min(self.prd_paths.len().saturating_sub(1));
+        let prd = self.prd_paths[index].clone();
+        let eval = self.eval_paths.as_ref().and_then(|evals| {
+            if evals.len() == 1 {
+                evals.first().cloned()
+            } else {
+                evals.get(index).cloned()
+            }
+        });
+        (prd, eval)
+    }
 }
 
 /// A recipe plus what the loader wanted to say about it.

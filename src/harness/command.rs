@@ -133,6 +133,12 @@ pub(crate) struct Execution {
     pub(crate) timed_out: bool,
     /// Signal name when killed, e.g. `SIGTERM`.
     pub(crate) signal: Option<String>,
+    /// `types.ts:19`: the harness did not run it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) skipped: Option<bool>,
+    /// `types.ts:20`: why, e.g. `fingerprint-unchanged`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) skip_reason: Option<String>,
 }
 
 impl Execution {
@@ -231,6 +237,8 @@ pub(crate) async fn execute(options: Execute<'_>) -> std::io::Result<Execution> 
         duration_ms: started.elapsed().as_millis() as u64,
         timed_out,
         signal: signal_name(&status),
+        skipped: None,
+        skip_reason: None,
     })
 }
 
@@ -399,6 +407,8 @@ mod tests {
             duration_ms: 1,
             timed_out: false,
             signal: None,
+            skipped: None,
+            skip_reason: None,
         };
         assert_eq!(
             execution.describe_failure(),

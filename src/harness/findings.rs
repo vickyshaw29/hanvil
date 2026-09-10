@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::harness::command::Execution;
 
 /// `types.ts:271-279`, plus `chain` for Hanvil's deterministic chain assertions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Category {
     /// Required or forbidden files.
