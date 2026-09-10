@@ -174,6 +174,9 @@ pub struct Chain {
     impersonated: HashSet<Address>,
     topics: BTreeMap<EntityId, Topic>,
     hapi_records: Vec<Record>,
+    /// Index into `hapi_records` by id. Not serialised — serde_json refuses a struct as a map
+    /// key — and rebuilt by [`Chain::from_json`].
+    #[serde(skip)]
     hapi_by_id: HashMap<TxId, usize>,
     snapshots: BTreeMap<u64, Chain>,
     next_snapshot: u64,
@@ -244,7 +247,24 @@ impl Chain {
     /// Read a chain written by [`Chain::to_json`]. The file decides the chain id and every
     /// account, so the genesis flags are not consulted.
     pub fn from_json(json: &str) -> Result<Self, Error> {
-        serde_json::from_str(json).map_err(|e| Error::State(e.to_string()))
+        let mut chain: Self =
+            serde_json::from_str(json).map_err(|e| Error::State(e.to_string()))?;
+        chain.reindex();
+        Ok(chain)
+    }
+
+    /// Rebuild the id index after deserialisation, in this chain and in every snapshot it
+    /// carries, so `DUPLICATE_TRANSACTION` still works after a restart or a revert.
+    fn reindex(&mut self) {
+        self.hapi_by_id = self
+            .hapi_records
+            .iter()
+            .enumerate()
+            .map(|(index, record)| (record.id, index))
+            .collect();
+        for snapshot in self.snapshots.values_mut() {
+            snapshot.reindex();
+        }
     }
 
     /// The whole chain as JSON, snapshots included, so `--state` restores what `evm_revert`
@@ -1474,6 +1494,49 @@ mod tests {
             now: Timestamp::from_secs(1_700_000_000),
         })
         .expect("genesis")
+    }
+
+    /// `hapi_by_id` is keyed by a struct, which serde_json cannot write; the first HAPI
+    /// transaction used to make `--state` and `--dump-state` fail with "key must be a string".
+    /// The index is rebuilt on load, snapshots included, so the duplicate check survives.
+    #[test]
+    fn a_chain_with_hapi_records_round_trips_through_json() {
+        let mut c = chain();
+        let snapshot = c.snapshot();
+        let id = TxId {
+            payer: EntityId(1002),
+            valid_start: Timestamp::from_secs(1_700_000_005),
+            nonce: 0,
+            scheduled: false,
+        };
+        let record = c.apply_hapi(
+            Transaction {
+                id,
+                memo: String::new(),
+                max_fee: Tinybar(0),
+                hash: Digest384::default(),
+                valid_duration_seconds: 120,
+                body: Body::Delete {
+                    account: EntityId(1003),
+                    transfer_to: EntityId(1002),
+                },
+            },
+            Timestamp::from_secs(1_700_000_005),
+        );
+        assert_eq!(record.status, Status::Success);
+
+        let json = c.to_json().expect("a chain with a HAPI record serialises");
+        let mut restored = Chain::from_json(&json).expect("and deserialises");
+        assert!(restored.has_transaction_id(&id));
+        assert_eq!(
+            restored.hapi_record(&id).map(|r| r.status),
+            Some(Status::Success)
+        );
+        assert!(restored.account(EntityId(1003)).expect("account").deleted);
+
+        assert!(restored.revert(snapshot));
+        assert!(!restored.has_transaction_id(&id));
+        assert!(!restored.account(EntityId(1003)).expect("account").deleted);
     }
 
     /// A call to an unemulated system contract must fail loudly. Before genesis etched stubs
