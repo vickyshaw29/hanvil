@@ -25,12 +25,15 @@ k256 = { version = "0.13", features = ["ecdsa"] }
 parking_lot = "0.12"
 prost = "0.14"
 prost-types = "0.14"
+rand_core = { version = "0.6", features = ["getrandom"] }
+regex = { version = "1.13", default-features = false, features = ["std", "unicode-perl", "perf"] }
 revm = { version = "43", features = ["std", "serde", "optional_balance_check", "optional_block_gas_limit", "optional_no_base_fee"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
+serde_yaml_ng = "0.10"
 sha2 = "0.11"
 thiserror = "2"
-tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync"] }
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync", "process", "io-util", "fs"] }
 tonic = "0.14"
 tonic-prost = "0.14"
 tracing = "0.1"
