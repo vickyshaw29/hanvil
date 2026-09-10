@@ -38,6 +38,20 @@ pub enum Command {
     Run(RunArgs),
     /// Check the recipe and the host before a long run. Reports everything at once.
     Doctor(DoctorArgs),
+    /// ASSERT, then the thin SMOKE gate when ASSERT is clean. No agent, no chain.
+    Validate(ValidateArgs),
+}
+
+/// `hanvil validate [SPEC] [--workspace DIR]`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct ValidateArgs {
+    /// Recipe to validate against. Defaults to .harness/spec.yaml.
+    #[arg(value_name = "SPEC")]
+    pub spec: Option<PathBuf>,
+
+    /// Project directory. Defaults to the current directory.
+    #[arg(long, value_name = "DIR")]
+    pub workspace: Option<PathBuf>,
 }
 
 /// `hanvil run [SPEC] [--max-attempts N] [--new | --continue BRANCH] [--workspace DIR]`.

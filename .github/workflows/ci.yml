@@ -150,3 +150,28 @@ jobs:
           path: |
             ${{ runner.temp }}/project/.harness/runs
             ${{ runner.temp }}/hanvil.log
+
+  # hanvil run on its own fixtures: the node boots in-process, a bash agent generates, the chain
+  # is snapshotted and reverted between attempts, and the SMOKE gate drives the runner's Chrome
+  # through @playwright/mcp. No secrets, no Node harness, no npm install of anything.
+  hanvil-run:
+    name: hanvil run on the fixtures (no secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Git identity for the checkpoint commits the harness makes
+        run: |
+          git config --global user.email ci@hanvil
+          git config --global user.name CI
+      - run: cargo test --release --test run -- --nocapture
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hanvil-run
+          path: ${{ runner.temp }}/hanvil-run-*/.harness/runs
+          if-no-files-found: ignore

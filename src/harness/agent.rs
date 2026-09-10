@@ -230,6 +230,7 @@ impl Provider {
             source,
         })?;
         let pgid = child.id();
+        command::register_group(pgid);
 
         let last_activity = Arc::new(Mutex::new(Instant::now()));
         let stdout = Arc::new(Mutex::new(BoundedOutput::with_limits(
@@ -301,6 +302,7 @@ impl Provider {
             command: self.config.command.clone(),
             source,
         })?;
+        command::unregister_group(pgid);
         if let Some(reader) = stdout_reader {
             let _ = reader.await;
         }

@@ -372,6 +372,7 @@ impl Client {
             .spawn()
             .map_err(Error::Spawn)?;
         let pgid = child.id();
+        command::register_group(pgid);
         let stdin = child
             .stdin
             .take()
@@ -518,6 +519,7 @@ impl Client {
     pub(crate) async fn close(mut self) {
         drop(self.stdin);
         let _ = command::stop_group(&mut self.child, self.pgid).await;
+        command::unregister_group(self.pgid);
     }
 }
 

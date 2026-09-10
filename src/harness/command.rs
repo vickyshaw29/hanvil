@@ -193,6 +193,7 @@ pub(crate) async fn execute(options: Execute<'_>) -> std::io::Result<Execution> 
         .kill_on_drop(true);
     let mut child = command.spawn()?;
     let pgid = child.id();
+    register_group(pgid);
 
     let stdout = Arc::new(Mutex::new(BoundedOutput::new()));
     let stderr = Arc::new(Mutex::new(BoundedOutput::new()));
@@ -228,6 +229,7 @@ pub(crate) async fn execute(options: Execute<'_>) -> std::io::Result<Execution> 
         let _ = reader.await;
     }
 
+    unregister_group(pgid);
     Ok(Execution {
         command: options.command.to_string(),
         args: options.args.to_vec(),
@@ -369,6 +371,59 @@ pub(crate) fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// Process groups the harness has started and not yet reaped. Ctrl-C walks this list so an
+/// agent, a dev server or a browser never outlives the run (`kill_on_drop` reaches only the
+/// direct child).
+static LIVE_GROUPS: std::sync::Mutex<std::collections::BTreeSet<u32>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// Remember a group after spawning it.
+pub(crate) fn register_group(pgid: Option<u32>) {
+    if let (Some(pgid), Ok(mut groups)) = (pgid, LIVE_GROUPS.lock()) {
+        groups.insert(pgid);
+    }
+}
+
+/// Forget a group once it has been waited on.
+pub(crate) fn unregister_group(pgid: Option<u32>) {
+    if let (Some(pgid), Ok(mut groups)) = (pgid, LIVE_GROUPS.lock()) {
+        groups.remove(&pgid);
+    }
+}
+
+/// SIGTERM every live group, wait the grace period once, then SIGKILL what is left.
+pub(crate) async fn kill_all_groups() -> usize {
+    let groups: Vec<u32> = LIVE_GROUPS
+        .lock()
+        .map(|groups| groups.iter().copied().collect())
+        .unwrap_or_default();
+    kill_groups(&groups).await;
+    if let Ok(mut live) = LIVE_GROUPS.lock() {
+        live.clear();
+    }
+    groups.len()
+}
+
+/// SIGTERM the given groups, wait one second, then SIGKILL them.
+pub(crate) async fn kill_groups(groups: &[u32]) {
+    for signal in ["TERM", "KILL"] {
+        for pgid in groups {
+            let _ = tokio::process::Command::new("pkill")
+                .arg(format!("-{signal}"))
+                .arg("-g")
+                .arg(pgid.to_string())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .await;
+        }
+        if signal == "TERM" && !groups.is_empty() {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,6 +503,30 @@ mod tests {
         assert_eq!(execution.stderr, "err");
         assert!(!execution.timed_out);
         assert_eq!(execution.signal, None);
+    }
+
+    #[tokio::test]
+    async fn registered_groups_are_stopped_together_on_interrupt() {
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "sleep 30 & sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("spawns");
+        let pgid = child.id();
+        register_group(pgid);
+        let started = Instant::now();
+        // Only this group: other tests run in parallel with their own live children.
+        kill_groups(&[pgid.expect("pid")]).await;
+        let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+            .await
+            .expect("exits after the group kill")
+            .expect("status");
+        assert_eq!(signal_name(&status).as_deref(), Some("SIGTERM"));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        unregister_group(pgid);
     }
 
     #[tokio::test]

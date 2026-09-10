@@ -484,3 +484,41 @@ fn the_smoke_gate_walks_the_routes_and_names_the_forbidden_text() {
     );
     let _ = std::fs::remove_dir_all(repo);
 }
+
+#[test]
+fn validate_runs_assert_alone_and_reports_like_upstream() {
+    let repo = fixture_repo("validate");
+    let output = Command::new(env!("CARGO_BIN_EXE_hanvil"))
+        .args(["validate"])
+        .current_dir(&repo)
+        .output()
+        .expect("hanvil runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "{stdout}");
+    assert_eq!(
+        stdout.trim(),
+        "Validation finished\npassed=false\nfindings=1\n- Required file is missing: generated.txt"
+    );
+    assert_eq!(
+        git_stdout(&["branch", "--show-current"], &repo),
+        "main",
+        "validate makes no branch"
+    );
+    assert!(
+        !repo.join(".harness/runs").exists(),
+        "validate writes no run"
+    );
+
+    std::fs::write(repo.join("generated.txt"), "ok\n").expect("write");
+    let output = Command::new(env!("CARGO_BIN_EXE_hanvil"))
+        .args(["validate", ".harness/spec.yaml"])
+        .current_dir(&repo)
+        .output()
+        .expect("hanvil runs");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "Validation finished\npassed=true\nfindings=0"
+    );
+    let _ = std::fs::remove_dir_all(repo);
+}

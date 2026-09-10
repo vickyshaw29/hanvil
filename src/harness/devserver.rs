@@ -121,6 +121,7 @@ impl Session {
     /// `devServer.ts:205-230`: SIGTERM the group, SIGKILL after 5 s.
     pub(crate) async fn stop(mut self) {
         let _ = command::stop_group(&mut self.child, self.pgid).await;
+        command::unregister_group(self.pgid);
     }
 }
 
@@ -146,6 +147,7 @@ pub(crate) async fn start(
         .spawn()
         .map_err(Error::Spawn)?;
     let pgid = child.id();
+    command::register_group(pgid);
     let detected: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     for (pipe, stream) in [
         (child.stdout.take().map(Pipe::Out), "stdout"),

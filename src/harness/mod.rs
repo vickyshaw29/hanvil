@@ -51,8 +51,64 @@ pub(crate) const DEFAULT_SPEC_PATH: &str = ".harness/spec.yaml";
 /// not pass or anything threw (`index.ts:22-26` prints `Error: <message>`).
 pub(crate) async fn dispatch(command: cli::Command, node: cli::NodeArgs) -> ExitCode {
     match command {
-        cli::Command::Run(args) => match run::run(args, node).await {
-            Ok(outcome) => {
+        cli::Command::Validate(args) => match run::validate(args).await {
+            Ok(validation) => {
+                // `cli.ts:109-127`.
+                let mut lines = vec![
+                    "Validation finished".to_string(),
+                    format!("passed={}", validation.passed),
+                    format!("findings={}", validation.findings.len()),
+                ];
+                if let Some(gate) = &validation.playwright_gate {
+                    lines.push(format!(
+                        "playwrightGate={} routes={}",
+                        gate.passed,
+                        gate.routes.len()
+                    ));
+                }
+                lines.extend(
+                    validation
+                        .findings
+                        .iter()
+                        .map(|f| format!("- {}", f.message)),
+                );
+                lines.extend(validation.command_results.iter().map(|r| {
+                    format!(
+                        "command {} exit={} durationMs={}",
+                        r.command,
+                        r.exit_code
+                            .map_or_else(|| "null".to_string(), |c| c.to_string()),
+                        r.duration_ms
+                    )
+                }));
+                println!("{}", lines.join("\n"));
+                if validation.passed {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                }
+            }
+            Err(error) => {
+                eprintln!("Error: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        // D13: an interrupt drops the run future and then stops every process group the run
+        // started; the run directory's status.json says `interrupted`.
+        cli::Command::Run(args) => match tokio::select! {
+            outcome = run::run(args, node) => Some(outcome),
+            _ = tokio::signal::ctrl_c() => None,
+        } {
+            None => {
+                println!(
+                    "[hanvil] interrupted — stopping the agent, the dev server and the browser"
+                );
+                let stopped = command::kill_all_groups().await;
+                run::note_interrupted();
+                println!("[hanvil] stopped {stopped} process group(s)");
+                ExitCode::from(130)
+            }
+            Some(Ok(outcome)) => {
                 for line in &outcome.outro {
                     println!("{line}");
                 }
@@ -62,7 +118,7 @@ pub(crate) async fn dispatch(command: cli::Command, node: cli::NodeArgs) -> Exit
                     ExitCode::FAILURE
                 }
             }
-            Err(error) => {
+            Some(Err(error)) => {
                 eprintln!("Error: {error}");
                 ExitCode::FAILURE
             }

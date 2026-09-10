@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use serde_json::json;
 
-use crate::cli::{NodeArgs, RunArgs};
+use crate::cli::{NodeArgs, RunArgs, ValidateArgs};
 use crate::harness::artifacts::{self, CONTEXT_DIR, LogEvent, RUNTIME_DIR, now_iso8601};
 use crate::harness::attempt::{self, ChainHandle, LoopInput, RunReport, SliceReport};
 use crate::harness::chain::{self, LocalChain, Signer};
@@ -35,6 +35,15 @@ pub(crate) enum Error {
     /// The attempt loop.
     #[error(transparent)]
     Attempt(#[from] attempt::Error),
+    /// ASSERT, from `validate`.
+    #[error(transparent)]
+    Assert(#[from] crate::harness::assert::Error),
+    /// The SMOKE gate config, from `validate`.
+    #[error(transparent)]
+    Smoke(#[from] crate::harness::smoke::Error),
+    /// The dev server, from `validate`.
+    #[error(transparent)]
+    DevServer(#[from] crate::harness::devserver::Error),
     /// The chain.
     #[error(transparent)]
     Chain(#[from] chain::Error),
@@ -81,6 +90,73 @@ pub(crate) struct Cleanup {
     pub(crate) consumer_dirty_paths: Vec<String>,
     /// No dirty paths.
     pub(crate) tree_clean: bool,
+}
+
+/// The run directory of the run in progress, so an interrupt can say so in `status.json`.
+static CURRENT_RUN_DIR: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// D13: called from the Ctrl-C handler after the run future was dropped.
+pub(crate) fn note_interrupted() {
+    let run_dir = CURRENT_RUN_DIR.lock().ok().and_then(|guard| guard.clone());
+    if let Some(run_dir) = run_dir {
+        let _ = artifacts::write_json_file(
+            &run_dir.join("status.json"),
+            &json!({ "updatedAt": now_iso8601(), "phase": "interrupted" }),
+        );
+    }
+}
+
+/// `runner.ts:28-63`: ASSERT on the workspace, then the thin SMOKE gate when ASSERT is clean.
+/// No agent, no chain, no branch.
+pub(crate) async fn validate(
+    args: ValidateArgs,
+) -> Result<crate::harness::findings::ValidationResult, Error> {
+    let workspace = args
+        .workspace
+        .clone()
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let workspace = std::path::absolute(&workspace).unwrap_or(workspace);
+    let spec_path = args
+        .spec
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_SPEC_PATH));
+    let loaded = spec::load(&spec_path)?;
+    let spec = &loaded.spec;
+    let mut validation = crate::harness::assert::run(&workspace, spec, None).await?;
+    let Some(playwright_path) = spec.validators.playwright_path.clone() else {
+        return Ok(validation);
+    };
+    if !crate::harness::assert::is_ready_for_smoke(&validation.findings) {
+        println!("[hanvil] Skipping Playwright gate because deterministic gates are not clean.");
+        return Ok(validation);
+    }
+    let gate = crate::harness::smoke::load_gate_config(&playwright_path)?;
+    println!("[hanvil] Running thin Playwright gate...");
+    let mut dev_server = crate::harness::devserver::start(
+        &workspace,
+        &gate.server,
+        "validate",
+        &std::collections::BTreeMap::new(),
+    )
+    .await?;
+    let output_dir = std::env::temp_dir().join(format!("hanvil-validate-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&output_dir);
+    let (result, findings) = crate::harness::smoke::run_gate(
+        &workspace,
+        &playwright_path,
+        &gate,
+        &mut dev_server,
+        &output_dir,
+        &crate::harness::smoke::resolve_browser(),
+    )
+    .await;
+    dev_server.stop().await;
+    let _ = std::fs::remove_dir_all(&output_dir);
+    validation.findings.extend(findings);
+    validation.passed = validation.findings.is_empty();
+    validation.playwright_gate = Some(result);
+    Ok(validation)
 }
 
 /// What `hanvil run` returns to the CLI.
@@ -207,6 +283,9 @@ async fn drive(
         cycle,
         ..
     } = prepared;
+    if let Ok(mut current) = CURRENT_RUN_DIR.lock() {
+        *current = Some(layout.run_directory.clone());
+    }
     let is_continue = mode == Mode::Continue;
     let started = Instant::now();
     let started_at = now_iso8601();
