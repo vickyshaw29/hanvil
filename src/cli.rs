@@ -25,6 +25,33 @@ pub struct Args {
     /// accepts them after its own name.
     #[command(flatten)]
     pub node: NodeArgs,
+
+    /// The harness. Bare `hanvil` is the node.
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+/// Harness subcommands, named as in `hedera-harness`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum Command {
+    /// Check the recipe and the host before a long run. Reports everything at once.
+    Doctor(DoctorArgs),
+}
+
+/// `hanvil doctor [SPEC] [--recipe-only] [--workspace DIR]`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct DoctorArgs {
+    /// Recipe to check. Defaults to .harness/spec.yaml.
+    #[arg(value_name = "SPEC")]
+    pub spec: Option<PathBuf>,
+
+    /// Check the recipe alone; skip the host and project checks.
+    #[arg(long)]
+    pub recipe_only: bool,
+
+    /// Project directory for the git and tool checks. Defaults to the current directory.
+    #[arg(long, value_name = "DIR")]
+    pub workspace: Option<PathBuf>,
 }
 
 /// Everything that shapes the chain and its listeners.

@@ -15,6 +15,7 @@ mod rpc;
 mod serve;
 mod state;
 
+use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -22,11 +23,16 @@ use anyhow::Context as _;
 use clap::Parser;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> anyhow::Result<ExitCode> {
     let started = Instant::now();
     let args = cli::Args::parse();
     init_tracing(args.node.silent);
-    serve_node(&args.node, started).await
+    match args.command {
+        None => serve_node(&args.node, started)
+            .await
+            .map(|()| ExitCode::SUCCESS),
+        Some(command) => Ok(harness::dispatch(command).await),
+    }
 }
 
 /// The bare node: boot, print the banner, run until ctrl-c, dump state if asked.
