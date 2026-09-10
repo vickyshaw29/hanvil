@@ -383,3 +383,13 @@ Subprocesses are spawned in their own process group and stopped with `pkill -TER
 `pkill -KILL -g`; both pipes are drained from the first byte; Ctrl-C kills every live group and
 writes `status.json{phase:"interrupted"}`. Every `Chain` access is a block-scoped lock with no
 `.await` inside.
+
+Run-log events beyond the upstream set: `chain_snapshot_taken`, `chain_snapshot_reverted`,
+`chain_state_written` (with `bytes`) and `chain_assertions_finished`; those and
+`chain_signer_provisioned` carry `durationMicros`, measured inside the lock, and the console line
+prints the same number. The README quotes only those numbers.
+
+First real run, 2026-09-10 (`examples/hcs-receipts-api`, `claude`): PASSED in 9 min 32 s over two
+attempts; attempt 1 failed SMOKE on a favicon 404 console error, the chain was reverted, attempt 2
+passed SMOKE and EVALUATE. The recipe's chain assertion did not trap attempt 1 — the agent reads
+`spec.yaml` and satisfied it — so no recipe claims an engineered failure.
