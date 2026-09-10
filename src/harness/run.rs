@@ -643,10 +643,18 @@ async fn cleanup_runtime(workspace: &Path) -> Result<Cleanup, Error> {
             }
         }
     }
+    // `runCleanup.ts:73-82`: workspace MCP files any preset may have written.
+    // Both files are stripped; `any` would stop at the first.
+    let mut mcp_stripped = false;
+    for relative in [".cursor/mcp.json", ".mcp.json"] {
+        if crate::harness::mcp::strip_harness_entry(&workspace.join(relative)) {
+            mcp_stripped = true;
+        }
+    }
     let consumer_dirty_paths = git::consumer_dirty_paths(workspace).await?;
     Ok(Cleanup {
         removed_paths: removed,
-        mcp_stripped: false,
+        mcp_stripped,
         tree_clean: consumer_dirty_paths.is_empty(),
         consumer_dirty_paths,
     })

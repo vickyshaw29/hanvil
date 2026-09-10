@@ -88,6 +88,9 @@ pub(crate) struct Options {
     /// `--recipe-only`: load the recipe and report nothing else. CI checks recipes across
     /// template branches without building each app.
     pub(crate) recipe_only: bool,
+    /// Called from `run`'s preflight: the EVALUATE browser is probed, the SMOKE-only browser
+    /// check is doctor's alone (`preflight.ts:84-93` vs `doctor.ts:270-282`).
+    pub(crate) preflight: bool,
 }
 
 /// `doctor.ts:37-92`, in the same order: node, git, git-repo, recipe, agent, package-manager,
@@ -125,6 +128,9 @@ pub(crate) async fn run(options: &Options) -> Report {
         checks.push(missing_eval_config());
     }
     checks.push(check_prompt_overrides(&spec.project_root));
+    if let Some(check) = check_browser(spec, workspace, options.preflight).await {
+        checks.push(check);
+    }
     if let Some(check) = check_chain(spec) {
         checks.push(check);
     }
@@ -504,6 +510,42 @@ fn check_prompt_overrides(project_root: &Path) -> Check {
             "Overrides in {PROJECT_PROMPTS_DIR}/ do not track harness updates — re-check them after upgrading."
         ),
     )
+}
+
+/// `preflight.ts:344-384` and `doctor.ts:256-282`: start the MCP server and actually navigate,
+/// because every cheaper check has lied. EVALUATE's probe runs for doctor and for `run`; the
+/// SMOKE-only browser check is doctor's alone.
+async fn check_browser(spec: &Spec, workspace: &Path, preflight: bool) -> Option<Check> {
+    spec.validators.playwright_path.as_ref()?;
+    let evaluate = spec.validator_enabled() && spec.eval_paths.is_some();
+    if !evaluate && preflight {
+        return None;
+    }
+    let name = if evaluate {
+        "EVALUATE browser (Playwright MCP)"
+    } else {
+        "SMOKE browser"
+    };
+    let probe = crate::harness::mcp::probe(workspace).await;
+    if probe.ok {
+        return Some(Check::ok(name, probe.choice.detail()));
+    }
+    let repair = probe.choice.repair();
+    let fix = match (evaluate, probe.choice.source()) {
+        (true, "project-playwright") => format!("Reinstall Chromium: {repair}"),
+        (true, _) => {
+            format!("Install system Chrome so SMOKE and EVALUATE share one browser: {repair}")
+        }
+        (false, "project-playwright") => format!("Reinstall Chromium: {repair}"),
+        (false, _) => format!("Install system Chrome, or install Chromium: {repair}"),
+    };
+    Some(Check::fail(
+        name,
+        probe
+            .error
+            .unwrap_or_else(|| "the Playwright MCP browser could not be launched".to_string()),
+        fix,
+    ))
 }
 
 /// Replaces `doctor.ts` `checkChainEnv`. There are no credentials to check: on `local` the

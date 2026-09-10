@@ -227,6 +227,95 @@ pub(crate) fn write_config(run_directory: &Path, choice: &BrowserChoice) -> Resu
     Ok(path)
 }
 
+/// `mcpBrowser.ts:306-338`: for a CLI that only reads a fixed workspace file (Cursor's
+/// `.cursor/mcp.json`), merge the harness's server entry in for the duration of EVALUATE and
+/// put the file back byte for byte afterwards — or remove it, when there was none.
+pub(crate) struct WorkspaceFile {
+    path: PathBuf,
+    previous: Option<Vec<u8>>,
+}
+
+impl WorkspaceFile {
+    /// Write the merged file.
+    pub(crate) fn install(
+        workspace: &Path,
+        relative: &str,
+        choice: &BrowserChoice,
+        output_dir: &Path,
+    ) -> Result<Self, Error> {
+        let path = workspace.join(relative);
+        let previous = std::fs::read(&path).ok();
+        let mut servers = previous
+            .as_deref()
+            .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
+            .and_then(|value| value.get("mcpServers").cloned())
+            .and_then(|servers| match servers {
+                Value::Object(map) => Some(map),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let mut args = choice.args();
+        args.push("--output-dir".to_string());
+        args.push(output_dir.to_string_lossy().into_owned());
+        servers.insert(
+            "playwright".to_string(),
+            json!({ "command": "npx", "args": args }),
+        );
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| Error::Config {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        let rendered =
+            serde_json::to_string_pretty(&json!({ "mcpServers": servers })).unwrap_or_default();
+        std::fs::write(&path, format!("{rendered}\n")).map_err(|source| Error::Config {
+            path: path.clone(),
+            source,
+        })?;
+        Ok(Self { path, previous })
+    }
+
+    /// Restore what was there.
+    pub(crate) fn restore(self) {
+        match self.previous {
+            Some(bytes) => {
+                let _ = std::fs::write(&self.path, bytes);
+            }
+            None => {
+                let _ = std::fs::remove_file(&self.path);
+            }
+        }
+    }
+}
+
+/// `runCleanup.ts:84-130`: strip a harness-written `playwright` entry from a workspace MCP
+/// file; delete the file when that empties it. Never a user's own entry.
+pub(crate) fn strip_harness_entry(path: &Path) -> bool {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(mut parsed) = serde_json::from_str::<Value>(&raw) else {
+        return false;
+    };
+    let Some(servers) = parsed.get_mut("mcpServers").and_then(Value::as_object_mut) else {
+        return false;
+    };
+    let Some(entry) = servers.get("playwright") else {
+        return false;
+    };
+    if !is_harness_mcp_server(entry) {
+        return false;
+    }
+    servers.remove("playwright");
+    if servers.is_empty() {
+        let _ = std::fs::remove_file(path);
+        return true;
+    }
+    let rendered = serde_json::to_string_pretty(&parsed).unwrap_or_default();
+    std::fs::write(path, format!("{rendered}\n")).is_ok()
+}
+
 /// `mcpBrowser.ts:218-225`: an entry the harness wrote carries both the pin and the marker.
 pub(crate) fn is_harness_mcp_server(entry: &Value) -> bool {
     let args: Vec<&str> = entry

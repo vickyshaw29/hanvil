@@ -1,0 +1,18 @@
+# SMOKE against a static server: `home` passes, `broken` shows forbidden text, `missing` is a 404.
+schemaVersion: 3
+name: smoke-on-hanvil
+prd: .harness/prd.md
+generator:
+  provider: command
+  command: bash
+  args:
+    - -c
+    - "printf 'ok\\n' > generated.txt"
+requiredFiles:
+  - generated.txt
+validators:
+  playwright: .harness/validators/playwright-smoke.yaml
+baseline:
+  commands:
+    - name: install
+      command: "true"

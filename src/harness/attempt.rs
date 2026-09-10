@@ -24,14 +24,19 @@ use crate::harness::artifacts::{
 use crate::harness::assert;
 use crate::harness::chain::{self, LocalChain, Signer};
 use crate::harness::command::{self, Execute};
+use crate::harness::devserver;
 use crate::harness::env;
+use crate::harness::evaluate::{self, EvaluationInput};
 use crate::harness::findings::{
     self, Category, Delta, Finding, ValidationResult, apply_status, compute_delta, format_delta,
     truncate_details,
 };
 use crate::harness::git;
+use crate::harness::mcp;
 use crate::harness::prompt::{self, ChainContext, Slice, VendoredContext, VendoredSkill};
 use crate::harness::session::{self, log_phase};
+use crate::harness::smoke;
+use crate::harness::spec::McpDelivery;
 use crate::harness::spec::Spec;
 use crate::serve::Shared;
 use crate::state::Clock;
@@ -84,15 +89,15 @@ pub(crate) enum Error {
         #[source]
         source: std::io::Error,
     },
-    /// A stage this build does not run yet. Removed when the stage lands; it fails the run
-    /// rather than passing it silently.
-    #[error("{stage} is not available in this build: {detail}")]
-    StageUnavailable {
-        /// `SMOKE` or `EVALUATE`.
-        stage: &'static str,
-        /// What to do instead.
-        detail: &'static str,
-    },
+    /// The SMOKE gate config.
+    #[error(transparent)]
+    Smoke(#[from] smoke::Error),
+    /// The dev server.
+    #[error(transparent)]
+    DevServer(#[from] devserver::Error),
+    /// The browser MCP config or workspace file.
+    #[error(transparent)]
+    Mcp(#[from] mcp::Error),
 }
 
 /// `types.ts:301-312`.
@@ -322,7 +327,7 @@ pub(crate) async fn run_loop(input: LoopInput<'_>) -> Result<RunReport, Error> {
         .await?;
 
         validation = run_validation_stages(
-            layout, spec, workspace, attempts, chain, signer, &mark, generate,
+            layout, spec, workspace, attempts, chain, signer, &mark, context, generate,
         )
         .await?;
 
@@ -619,6 +624,7 @@ async fn run_validation_stages(
     chain: &ChainHandle,
     signer: Option<&Signer>,
     mark: &chain::Mark,
+    context: &VendoredContext,
     generate_finding: Option<Finding>,
 ) -> Result<ValidationResult, Error> {
     log_stage("ASSERT", None);
@@ -677,13 +683,180 @@ async fn run_validation_stages(
         }
     }
 
-    if spec.validators.playwright_path.is_none() {
+    let Some(playwright_path) = spec.validators.playwright_path.clone() else {
         return Ok(validation);
+    };
+    run_browser_stages(
+        layout,
+        spec,
+        workspace,
+        attempt,
+        chain,
+        signer,
+        context,
+        &playwright_path,
+        validation,
+    )
+    .await
+}
+
+/// `attemptStages.ts:321-368`: one dev server per attempt, borrowed by SMOKE and EVALUATE and
+/// stopped whatever happens — after EVALUATE, not before it (the upstream bug this ordering
+/// pins). The MCP delivery wraps EVALUATE only.
+#[allow(clippy::too_many_arguments)]
+async fn run_browser_stages(
+    layout: &Layout,
+    spec: &Spec,
+    workspace: &Path,
+    attempt: u64,
+    chain: &ChainHandle,
+    signer: Option<&Signer>,
+    context: &VendoredContext,
+    playwright_path: &Path,
+    mut validation: ValidationResult,
+) -> Result<ValidationResult, Error> {
+    let gate = smoke::load_gate_config(playwright_path)?;
+    let run_evaluate = spec.validator_enabled() && spec.eval_paths.is_some();
+    let mut env = chain.local.env();
+    if let Some(signer) = signer {
+        let expose = spec
+            .chain_validation
+            .as_ref()
+            .map(|c| c.expose_env_vars.clone())
+            .unwrap_or_default();
+        env.extend(chain::deploy_env(signer, &expose));
     }
-    Err(Error::StageUnavailable {
-        stage: "SMOKE",
-        detail: "validators.playwright is set, and the browser stages land on Sat 2026-09-12; remove it or wait",
+    log_stage("SMOKE", Some("booting dev server"));
+    let mut dev_server = devserver::start(workspace, &gate.server, "runtime", &env).await?;
+    let choice = smoke::resolve_browser();
+    let output_dir = smoke::output_dir(&layout.run_directory);
+    let _ = std::fs::create_dir_all(&output_dir);
+
+    let (gate_result, smoke_findings) = smoke::run_gate(
+        workspace,
+        playwright_path,
+        &gate,
+        &mut dev_server,
+        &output_dir,
+        &choice,
+    )
+    .await;
+    validation.findings.extend(smoke_findings);
+    validation.playwright_gate = Some(gate_result);
+    validation.passed = validation
+        .findings
+        .iter()
+        .all(|f| f.category == Category::Agent);
+
+    let outcome: Result<ValidationResult, Error> = async {
+        if !validation.passed {
+            log_stage("EVALUATE", Some("skipped — smoke gate failed"));
+            return Ok(validation);
+        }
+        if !run_evaluate {
+            return Ok(validation);
+        }
+        let (extra_args, workspace_file) = match spec.agent.mcp() {
+            McpDelivery::ConfigFlag(flag) => {
+                let config_path = mcp::write_config(&layout.run_directory, &choice)?;
+                (
+                    vec![
+                        flag.to_string(),
+                        config_path.display().to_string(),
+                        "--strict-mcp-config".to_string(),
+                    ],
+                    None,
+                )
+            }
+            McpDelivery::WorkspaceFile(relative) => (
+                Vec::new(),
+                Some(mcp::WorkspaceFile::install(
+                    workspace,
+                    relative,
+                    &choice,
+                    &output_dir,
+                )?),
+            ),
+        };
+        let evaluation = run_evaluate_stage(
+            layout,
+            spec,
+            workspace,
+            attempt,
+            &dev_server.url,
+            signer,
+            context,
+            &extra_args,
+            &chain.local,
+            env.clone(),
+        )
+        .await?;
+        if let Some(file) = workspace_file {
+            file.restore();
+        }
+        if !evaluation.passed {
+            validation.passed = false;
+            validation.findings.extend(evaluation.findings.clone());
+        }
+        validation.evaluation = Some(evaluation);
+        Ok(validation)
+    }
+    .await;
+    dev_server.stop().await;
+    outcome
+}
+
+/// `attemptStages.ts:231-279`.
+#[allow(clippy::too_many_arguments)]
+async fn run_evaluate_stage(
+    layout: &Layout,
+    spec: &Spec,
+    workspace: &Path,
+    attempt: u64,
+    server_url: &str,
+    signer: Option<&Signer>,
+    context: &VendoredContext,
+    extra_args: &[String],
+    local: &LocalChain,
+    env: std::collections::BTreeMap<String, String>,
+) -> Result<findings::Evaluation, Error> {
+    let prompt_path = layout
+        .prompts_directory
+        .join(format!("validator-attempt-{attempt}.txt"));
+    layout.append_log(&LogEvent::ValidatorStarted {
+        attempt,
+        prompt_path,
+        server_url: server_url.to_string(),
+    })?;
+    log_stage("EVALUATE", Some(server_url));
+    let evaluation = evaluate::run(EvaluationInput {
+        workspace,
+        spec,
+        attempt,
+        layout,
+        server_url,
+        signer,
+        eval_relative_path: context.eval_relative_path.as_deref(),
+        extra_args,
+        mirror_base_url: &local.mirror_url,
+        env,
     })
+    .await;
+    write_json_file(
+        &layout
+            .logs_directory
+            .join(format!("evaluation-attempt-{attempt}.json")),
+        &evaluation,
+    )?;
+    layout.append_log(&LogEvent::ValidatorFinished {
+        attempt,
+        passed: evaluation.passed,
+        finding_count: evaluation.findings.len(),
+        duration_ms: evaluation.duration_ms,
+        infrastructure_failure: evaluation.infrastructure_failure,
+        infrastructure_failure_reason: evaluation.infrastructure_failure_reason.clone(),
+    })?;
+    Ok(evaluation)
 }
 
 /// `attemptStages.ts:196-228`.

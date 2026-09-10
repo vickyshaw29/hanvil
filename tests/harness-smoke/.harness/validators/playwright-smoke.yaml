@@ -1,0 +1,17 @@
+server:
+  command: node server.js
+  url: http://127.0.0.1:47391
+  timeoutMs: 30000
+defaults:
+  timeoutMs: 20000
+  hydrationTimeoutMs: 15000
+routes:
+  - name: home
+    path: /
+  - name: broken
+    path: /broken
+  - name: missing
+    path: /nope
+forbidden:
+  visibleText:
+    - "Application error"

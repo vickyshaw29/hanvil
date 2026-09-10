@@ -396,3 +396,91 @@ fn a_chain_assertion_the_app_cannot_meet_fails_the_run_with_a_runtime_repair() {
     assert_eq!(session["gateStatus"], "failed");
     let _ = std::fs::remove_dir_all(repo);
 }
+
+/// The SMOKE gate needs `npx` and a browser; without them the test says so instead of passing.
+fn browser_available() -> bool {
+    let npx = Command::new("sh")
+        .args(["-c", "command -v npx"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let chromium = home.join("Library/Caches/ms-playwright").exists()
+        || home.join(".cache/ms-playwright").exists();
+    let chrome = Command::new("sh")
+        .args(["-c", "command -v google-chrome || command -v google-chrome-stable || test -d '/Applications/Google Chrome.app'"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    npx && (chromium || chrome)
+}
+
+#[test]
+fn the_smoke_gate_walks_the_routes_and_names_the_forbidden_text() {
+    if !browser_available() {
+        eprintln!("skipped: the SMOKE gate needs npx and a Chromium or Chrome on this machine");
+        return;
+    }
+    let repo = std::env::temp_dir().join(format!("hanvil-run-smoke-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&repo);
+    copy_dir(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/harness-smoke"),
+        &repo,
+    );
+    for args in [
+        vec!["init", "-q", "-b", "main"],
+        vec!["config", "user.email", "run@hanvil"],
+        vec!["config", "user.name", "run"],
+        vec!["add", "-A"],
+        vec!["commit", "-q", "--no-gpg-sign", "-m", "fixture"],
+    ] {
+        assert!(
+            Command::new("git")
+                .args(&args)
+                .current_dir(&repo)
+                .status()
+                .expect("git")
+                .success()
+        );
+    }
+    let (ok, stdout, stderr) = run(&["--max-attempts", "1"], &repo);
+    assert!(!ok, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    for line in [
+        "[hanvil] Stage 4/5 SMOKE — booting dev server",
+        "[hanvil:runtime:server] Local: http://127.0.0.1:47391",
+        "[hanvil] Attempt 1 FAILED — 3 open",
+        "- [playwright] playwright:route:broken:forbidden:application-error: Playwright gate route /broken contains forbidden text: \"Application error\"",
+        "- [playwright] playwright:route:missing:status: Playwright gate route /nope returned HTTP 404",
+        // Chrome logs the 404 document as a console error, as Playwright's listener reports it.
+        "- [playwright] playwright:route:missing:console: Playwright gate route /nope logged browser console errors",
+    ] {
+        assert!(
+            stdout.contains(line),
+            "missing {line:?} in:\n{stdout}\n{stderr}"
+        );
+    }
+    let run_dir = run_directory(&repo);
+    let gate: Value = serde_json::from_str(
+        &std::fs::read_to_string(run_dir.join("logs/playwright-gate-attempt-1.json"))
+            .expect("gate json"),
+    )
+    .expect("json");
+    assert_eq!(gate["passed"], false);
+    assert_eq!(gate["serverUrl"], "http://127.0.0.1:47391");
+    assert_eq!(gate["serverCommand"], "node server.js");
+    let routes = gate["routes"].as_array().expect("routes");
+    assert_eq!(routes.len(), 3);
+    assert_eq!(routes[0]["name"], "home");
+    assert_eq!(routes[0]["statusCode"], 200);
+    assert_eq!(routes[0]["rendered"], true);
+    assert_eq!(routes[0]["forbiddenTextFound"], serde_json::json!([]));
+    assert_eq!(
+        routes[1]["forbiddenTextFound"],
+        serde_json::json!(["Application error"])
+    );
+    assert_eq!(routes[2]["statusCode"], 404);
+    // The dev server was stopped with the attempt.
+    assert!(
+        std::net::TcpStream::connect("127.0.0.1:47391").is_err(),
+        "the dev server is still listening"
+    );
+    let _ = std::fs::remove_dir_all(repo);
+}

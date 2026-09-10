@@ -286,6 +286,7 @@ async fn assert_preflight(spec: &Spec, workspace: &Path) -> Result<(), Error> {
         spec_path: spec.spec_path.clone(),
         workspace: workspace.to_path_buf(),
         recipe_only: false,
+        preflight: true,
     })
     .await;
     if let Some(failed) = report

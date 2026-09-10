@@ -20,12 +20,14 @@ pub(crate) mod command;
 pub(crate) mod devserver;
 pub(crate) mod doctor;
 pub(crate) mod env;
+pub(crate) mod evaluate;
 pub(crate) mod findings;
 pub(crate) mod git;
 pub(crate) mod mcp;
 pub(crate) mod prompt;
 pub(crate) mod run;
 pub(crate) mod session;
+pub(crate) mod smoke;
 pub(crate) mod spec;
 
 /// `promptTemplates.ts:13-21`.
@@ -75,6 +77,7 @@ pub(crate) async fn dispatch(command: cli::Command, node: cli::NodeArgs) -> Exit
                     .or_else(|| std::env::current_dir().ok())
                     .unwrap_or_else(|| PathBuf::from(".")),
                 recipe_only: args.recipe_only,
+                preflight: false,
             };
             let report = doctor::run(&options).await;
             println!("{}", doctor::format_report(&report));
