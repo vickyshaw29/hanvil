@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::harness::command;
+use crate::harness::git;
 use crate::harness::spec::{self, ChainNetwork, Spec};
 use crate::harness::{PROJECT_PROMPTS_DIR, PROMPT_TEMPLATE_NAMES};
 
@@ -283,13 +284,11 @@ async fn check_git_repo(cwd: &Path) -> Check {
             );
         }
     };
-    let detached = !command::capture("git", &["symbolic-ref", "-q", "HEAD"], &root)
-        .await
-        .is_ok_and(|captured| captured.ok);
+    let detached = git::is_detached_head(&root).await;
     if detached {
         return Check::fail("git repo", "HEAD is detached", fix);
     }
-    if let Some(operation) = in_progress_operation(&root).await {
+    if let Some(operation) = git::in_progress_operation(&root).await {
         return Check::fail(
             "git repo",
             format!("a {operation} is in progress"),
@@ -306,28 +305,6 @@ async fn check_git_repo(cwd: &Path) -> Check {
             fix,
         ),
     }
-}
-
-/// `harnessGit.ts` `detectInProgressGitOperation`: marker files under the git dir.
-async fn in_progress_operation(root: &Path) -> Option<&'static str> {
-    let git_dir = command::capture("git", &["rev-parse", "--git-dir"], root)
-        .await
-        .ok()
-        .filter(|captured| captured.ok)
-        .map(|captured| root.join(captured.stdout.trim()))?;
-    const MARKERS: [(&str, &str); 7] = [
-        ("MERGE_HEAD", "merge"),
-        ("REBASE_HEAD", "rebase"),
-        ("rebase-merge", "rebase"),
-        ("rebase-apply", "rebase"),
-        ("CHERRY_PICK_HEAD", "cherry-pick"),
-        ("REVERT_HEAD", "revert"),
-        ("BISECT_LOG", "bisect"),
-    ];
-    MARKERS
-        .iter()
-        .find(|(marker, _)| git_dir.join(marker).exists())
-        .map(|(_, label)| *label)
 }
 
 /// `preflight.ts:212-244`.
@@ -556,7 +533,10 @@ fn check_chain(spec: &Spec) -> Option<Check> {
     match chain.network {
         ChainNetwork::Testnet => Some(Check::fail(
             "chain",
-            "network: testnet is not supported by hanvil run",
+            format!(
+                "network: {} is not supported by hanvil run",
+                chain.network.name()
+            ),
             "Use network: local, or run this recipe with hedera-harness.",
         )),
         ChainNetwork::Local => {

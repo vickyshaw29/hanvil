@@ -119,10 +119,6 @@ pub(crate) struct Snapshot {
     pub(crate) branch: Option<String>,
     /// `git rev-parse HEAD`.
     pub(crate) head_sha: String,
-    /// `git symbolic-ref -q HEAD` failed.
-    pub(crate) detached: bool,
-    /// `merge`, `rebase`, `cherry-pick`, `revert`, `bisect`.
-    pub(crate) in_progress_operation: Option<&'static str>,
     /// The working tree.
     pub(crate) entries: Vec<Entry>,
 }
@@ -247,8 +243,6 @@ pub(crate) async fn read_snapshot(cwd: &Path) -> Result<Snapshot, Error> {
     Ok(Snapshot {
         head_sha: head_sha(&root).await?,
         branch: current_branch(&root).await,
-        detached: is_detached_head(&root).await,
-        in_progress_operation: in_progress_operation(&root).await,
         entries: working_tree_entries(&root).await?,
         repository_root: root,
     })
@@ -772,8 +766,8 @@ mod tests {
         let repo = temp_repo("checkpoint").await;
         let snapshot = read_snapshot(&repo).await.expect("snapshot");
         assert_eq!(snapshot.branch.as_deref(), Some("main"));
-        assert!(!snapshot.detached);
-        assert_eq!(snapshot.in_progress_operation, None);
+        assert!(!is_detached_head(&repo).await);
+        assert_eq!(in_progress_operation(&repo).await, None);
         assert!(snapshot.entries.is_empty());
         assert_clean_for_run_start(&repo).await.expect("clean");
 

@@ -2,10 +2,6 @@
 //! drives a coding agent against the in-process chain. Module by module it follows the
 //! TypeScript layout so a reader can diff them; `docs/code-plan.md` §16 has the contract.
 
-// Removed with the commit that lands `hanvil run` (Fri 2026-09-11): until the attempt loop reads
-// them, most recipe fields have no consumer. Tracked in plan.md §15.
-#![allow(dead_code)]
-
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -23,10 +19,12 @@ pub(crate) mod env;
 pub(crate) mod evaluate;
 pub(crate) mod findings;
 pub(crate) mod git;
+pub(crate) mod init;
 pub(crate) mod mcp;
 pub(crate) mod prompt;
 pub(crate) mod run;
 pub(crate) mod session;
+pub(crate) mod skills;
 pub(crate) mod smoke;
 pub(crate) mod spec;
 
@@ -51,6 +49,68 @@ pub(crate) const DEFAULT_SPEC_PATH: &str = ".harness/spec.yaml";
 /// not pass or anything threw (`index.ts:22-26` prints `Error: <message>`).
 pub(crate) async fn dispatch(command: cli::Command, node: cli::NodeArgs) -> ExitCode {
     match command {
+        cli::Command::Init(args) => match init::run(init::InitOptions {
+            target_dir: args.target_dir,
+            repo: args.repo,
+            ref_name: args.ref_name,
+            template: args.template,
+            skip_install: args.skip_install,
+        })
+        .await
+        {
+            Ok(result) => {
+                println!("{}", init::format_result(&result));
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("Error: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        cli::Command::ValidateSemantic(args) => match run::validate_semantic(args, node).await {
+            Ok(evaluation) => {
+                // `cli.ts:132-150`.
+                let mut lines = vec![
+                    "EVALUATE finished".to_string(),
+                    format!("passed={}", evaluation.passed),
+                    format!("findings={}", evaluation.findings.len()),
+                    format!("durationMs={}", evaluation.duration_ms),
+                ];
+                if evaluation.is_infrastructure_failure() {
+                    lines.push(format!(
+                        "infrastructureFailure=true reason={}",
+                        evaluation
+                            .infrastructure_failure_reason
+                            .as_deref()
+                            .unwrap_or("")
+                    ));
+                }
+                if let Some(summary) = evaluation
+                    .verdict
+                    .as_ref()
+                    .map(|v| v.summary.as_str())
+                    .filter(|s| !s.is_empty())
+                {
+                    lines.push(format!("summary={summary}"));
+                }
+                lines.extend(
+                    evaluation
+                        .findings
+                        .iter()
+                        .map(|f| format!("- [{}] {}", f.category.as_str(), f.message)),
+                );
+                println!("{}", lines.join("\n"));
+                if evaluation.passed {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                }
+            }
+            Err(error) => {
+                eprintln!("Error: {error}");
+                ExitCode::FAILURE
+            }
+        },
         cli::Command::Validate(args) => match run::validate(args).await {
             Ok(validation) => {
                 // `cli.ts:109-127`.

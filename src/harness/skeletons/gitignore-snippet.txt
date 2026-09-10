@@ -1,0 +1,7 @@
+# hanvil harness (project-centric)
+.harness/runs/
+.harness/runtime/
+.harness/cache/
+.skill-cache/
+.harness-skills/
+.harness-context/

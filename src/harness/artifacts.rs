@@ -150,11 +150,6 @@ impl Layout {
         Ok(layout)
     }
 
-    /// `session.json`.
-    pub(crate) fn session_path(&self) -> PathBuf {
-        self.run_directory.join("session.json")
-    }
-
     /// `status.json`.
     pub(crate) fn status_path(&self) -> PathBuf {
         self.run_directory.join("status.json")

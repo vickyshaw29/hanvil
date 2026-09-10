@@ -39,7 +39,6 @@ use crate::harness::smoke;
 use crate::harness::spec::McpDelivery;
 use crate::harness::spec::Spec;
 use crate::serve::Shared;
-use crate::state::Clock;
 
 /// `attemptStages.ts:38`, plus CHAIN.
 const STAGE_NAMES: [&str; 5] = ["GENERATE", "ASSERT", "CHAIN", "SMOKE", "EVALUATE"];
@@ -167,8 +166,6 @@ pub(crate) struct RunReport {
 pub(crate) struct ChainHandle {
     /// The one chain.
     pub(crate) shared: Shared,
-    /// Stamps HAPI transactions.
-    pub(crate) clock: Arc<dyn Clock>,
     /// Endpoints for prompts and env.
     pub(crate) local: LocalChain,
 }
@@ -568,8 +565,6 @@ async fn run_generate_stage(
             stdout: String::new(),
             stderr: error.to_string(),
             duration_ms: 0,
-            command: spec.generator.command.clone(),
-            args: spec.generator.args.clone().unwrap_or_default(),
             timed_out: false,
             signal: None,
         },

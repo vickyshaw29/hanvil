@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use regex::Regex;
 use serde_json::Value;
 
-use crate::harness::agent::{self, Provider, RunInput};
+use crate::harness::agent::{Provider, RunInput};
 use crate::harness::artifacts::{Layout, write_prompt_file};
 use crate::harness::chain::Signer;
 use crate::harness::findings::{
@@ -684,9 +684,6 @@ fn truncate_collapsed(value: &str, max: usize) -> String {
         format!("{}...", collapsed.chars().take(max).collect::<String>())
     }
 }
-
-/// `agent::RunResult` is what `run` consumes; re-exported for the attempt loop's tests.
-pub(crate) type AgentResult = agent::RunResult;
 
 #[cfg(test)]
 mod tests {

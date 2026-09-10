@@ -75,6 +75,7 @@ impl BoundedOutput {
     }
 
     /// Bytes that were dropped from the middle.
+    #[cfg(test)]
     pub(crate) fn truncated_bytes(&self) -> usize {
         self.dropped
     }

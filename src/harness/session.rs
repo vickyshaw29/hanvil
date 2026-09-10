@@ -149,8 +149,6 @@ pub(crate) struct Prepared {
     pub(crate) layout: Layout,
     /// The persisted session.
     pub(crate) session: Session,
-    /// The repository after preparation.
-    pub(crate) snapshot: git::Snapshot,
     /// 1 for a start; `lastAttempt + 1` for a continue.
     pub(crate) starting_attempt: u64,
     /// `None` for a start.
@@ -430,12 +428,10 @@ async fn start_session(
         }
     }
     write_session(&session)?;
-    let snapshot = git::read_snapshot(workspace).await?;
     Ok(Prepared {
         mode: Mode::Start,
         layout,
         session,
-        snapshot,
         starting_attempt: 1,
         cycle: None,
     })
@@ -519,7 +515,6 @@ async fn continue_session(
         mode: Mode::Continue,
         layout,
         session: updated,
-        snapshot,
         starting_attempt,
         cycle: Some(cycle),
     })

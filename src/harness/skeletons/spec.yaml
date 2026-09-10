@@ -1,0 +1,94 @@
+schemaVersion: 3
+
+name: my-feature
+description: What you want the agent to build in this project.
+
+baseline:
+  commands:
+    - name: install          # required — also used for install fingerprinting
+      command: yarn install
+    - name: build
+      command: yarn next:build
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Everything below is the harness default. Uncomment only to override.
+# These comments cannot drift: changing a default here changes nothing.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Skills are not listed here. Product plugins from hedera-skills are discovered
+# per run; the generator picks what this PRD needs.
+#
+# Which coding agent runs the generator. Presets ship with the harness, so flag
+# and model changes arrive with an upgrade instead of an edit here.
+# Default is claude; uncomment to use Cursor instead.
+# agent: cursor
+#
+# Feature description. A list delivers ordered increments onto one branch,
+# each with its own attempt budget; a failing increment stops the sequence.
+# prd: .harness/prd.md
+#
+# prd:
+#   - .harness/prds/01-foundation.md
+#   - .harness/prds/02-ui.md
+#
+# Evaluate checklist. Scalar grades every slice with one file; list form must
+# be 1:1 with prd: for true incremental grading.
+# eval: .harness/eval.json
+#
+# eval:
+#   - .harness/evals/01-foundation.json
+#   - .harness/evals/02-ui.json
+#
+# maxAttempts: 3             # repair attempts per run before stopping
+#
+# Each baseline command may set timeoutMs; the default is 10 minutes.
+#
+# validators:
+#   static: .harness/validators/static.json
+#   commands: .harness/validators/yarn.json
+#
+# Detected from the project when omitted: packageManager comes from
+# package.json / lockfiles, and forbiddenCommands is every manager that is not
+# the one in use.
+# constraints:
+#   packageManager: yarn@3.2.3
+#   workspaces:
+#     - packages/nextjs
+#
+# Defaults to .env plus one per workspace, for both the file check and the
+# content scan.
+# forbiddenFiles:
+#   - .env
+# secretScan:
+#   failOnFiles:
+#     - .env
+#   patterns:
+#     - name: private-key-assignment
+#       pattern: "(PRIVATE_KEY|OPERATOR_KEY)\\s*=\\s*(0x)?[0-9a-fA-F]{32,}"
+#
+# Files the run must produce. Empty by default — the validators are the gate.
+# requiredFiles:
+#   - packages/nextjs/app/my-feature/page.tsx
+#
+# ── Higher stages (opt-in) ───────────────────────────────────────────────────
+#
+# SMOKE boots the app and walks its routes.
+# validators:
+#   playwright: .harness/validators/playwright-smoke.yaml
+#
+# EVALUATE grades the running app against an evaluate checklist. The validator
+# inherits the agent preset above, including how it receives Playwright MCP.
+# (Also see the eval: examples near prd: above for list form.)
+# eval: .harness/eval.json
+# validator:
+#   enabled: true
+#
+# CHAIN provisions a funded ephemeral testnet account. Testnet only.
+# chainValidation:
+#   enabled: true
+#   network: testnet
+#   operator:
+#     accountIdEnv: HEDERA_OPERATOR_ID
+#     privateKeyEnv: HEDERA_OPERATOR_KEY
+#
+# Note: harness logs always live under .harness/runs/ and are not configurable.

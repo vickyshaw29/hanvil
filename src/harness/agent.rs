@@ -118,10 +118,6 @@ pub(crate) struct RunResult {
     pub(crate) stderr: String,
     /// Wall time.
     pub(crate) duration_ms: u64,
-    /// The binary.
-    pub(crate) command: String,
-    /// Argv as run, prompt included.
-    pub(crate) args: Vec<String>,
     /// The harness stopped it, for either reason.
     pub(crate) timed_out: bool,
     /// Signal name when killed.
@@ -150,6 +146,7 @@ impl Provider {
     }
 
     /// Override the idle timeout.
+    #[cfg(test)]
     pub(crate) fn with_idle_timeout(mut self, idle_timeout: Duration) -> Self {
         self.idle_timeout = idle_timeout;
         self
@@ -322,8 +319,6 @@ impl Provider {
             stdout: command::lock_render(&stdout),
             stderr: stderr_text,
             duration_ms: started.elapsed().as_millis() as u64,
-            command: self.config.command.clone(),
-            args,
             timed_out,
             signal: command::signal_name(&status),
         };
@@ -1035,7 +1030,6 @@ mod tests {
         assert!(!result.timed_out);
         assert!(result.stdout.contains("\"subtype\":\"success\""));
         assert!(result.stderr.contains("warn the prompt"));
-        assert_eq!(result.args.last().map(String::as_str), Some("the prompt"));
 
         let raw = std::fs::read_to_string(&log).expect("raw log");
         assert!(raw.starts_with("# agent raw stream log\ncommand=sh\nargs=[\"-c\",\""));

@@ -60,8 +60,10 @@ fn run(args: &[&str], cwd: &Path) -> (bool, String, String) {
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", std::env::var("HOME").unwrap_or_default())
+        // --no-skills: the tests must not clone hedera-skills from the network.
         .args([
             "run",
+            "--no-skills",
             "--port",
             "0",
             "--mirror-port",

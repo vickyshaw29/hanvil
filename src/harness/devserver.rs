@@ -7,35 +7,21 @@
 //! and a Next.js recipe behaves as before.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use crate::harness::command;
 
 /// `devServer.ts:7`.
 const URL_DETECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// `devServer.ts:87`.
-const DEFAULT_READY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// What stops a dev server from being usable.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
-    /// The gate YAML could not be read or parsed.
-    #[error("{path}: {message}")]
-    Config {
-        /// The gate config.
-        path: PathBuf,
-        /// What was wrong.
-        message: String,
-    },
-    /// `devServer.ts:81`.
-    #[error("Playwright config {0} requires server.command and server.url.")]
-    MissingServer(PathBuf),
     /// The command could not be started.
     #[error("starting the dev server: {0}")]
     Spawn(#[source] std::io::Error),
@@ -68,37 +54,6 @@ pub(crate) struct Config {
     pub(crate) configured_url: String,
     /// Readiness limit.
     pub(crate) timeout: Duration,
-}
-
-/// `devServer.ts:74-89`: `server.command`, `server.url`, `server.timeoutMs` from the gate YAML.
-pub(crate) fn load_config(playwright_yaml: &Path) -> Result<Config, Error> {
-    let raw = std::fs::read_to_string(playwright_yaml).map_err(|e| Error::Config {
-        path: playwright_yaml.to_path_buf(),
-        message: e.to_string(),
-    })?;
-    let parsed: Value = serde_yaml_ng::from_str(&raw).map_err(|e| Error::Config {
-        path: playwright_yaml.to_path_buf(),
-        message: e.to_string(),
-    })?;
-    let server = parsed.get("server");
-    let field = |key: &str| {
-        server
-            .and_then(|s| s.get(key))
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-    };
-    let (Some(command), Some(url)) = (field("command"), field("url")) else {
-        return Err(Error::MissingServer(playwright_yaml.to_path_buf()));
-    };
-    Ok(Config {
-        command,
-        configured_url: url,
-        timeout: server
-            .and_then(|s| s.get("timeoutMs"))
-            .and_then(Value::as_u64)
-            .map_or(DEFAULT_READY_TIMEOUT, Duration::from_millis),
-    })
 }
 
 /// `devServer.ts:22-28`: a live server, borrowed by the gates.
@@ -403,27 +358,6 @@ mod tests {
             split_url("https://example.test"),
             Some(("example.test".into(), 443, "/".into()))
         );
-    }
-
-    #[test]
-    fn the_gate_config_needs_a_command_and_a_url() {
-        let dir = std::env::temp_dir().join(format!("hanvil-devserver-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("mkdir");
-        let path = dir.join("playwright-smoke.yaml");
-        std::fs::write(&path, "server:\n  command: yarn dev\n  url: http://localhost:3000\n  timeoutMs: 5000\nroutes: []\n").expect("write");
-        let config = load_config(&path).expect("config");
-        assert_eq!(config.command, "yarn dev");
-        assert_eq!(config.configured_url, "http://localhost:3000");
-        assert_eq!(config.timeout, Duration::from_millis(5000));
-        std::fs::write(&path, "server:\n  command: yarn dev\n").expect("write");
-        assert_eq!(
-            load_config(&path).expect_err("missing url").to_string(),
-            format!(
-                "Playwright config {} requires server.command and server.url.",
-                path.display()
-            )
-        );
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn free_port() -> u16 {

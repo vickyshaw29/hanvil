@@ -15,6 +15,7 @@ use crate::harness::findings::Finding;
 use crate::harness::git;
 use crate::harness::prompt::{Slice, VendoredContext, VendoredSkill};
 use crate::harness::session::{self, Mode, PrepareInput, Prepared, Session, log_phase};
+use crate::harness::skills;
 use crate::harness::spec::{self, ChainNetwork, Loaded, Spec};
 use crate::harness::{DEFAULT_SPEC_PATH, env};
 use crate::node::{self, Node};
@@ -41,12 +42,21 @@ pub(crate) enum Error {
     /// The SMOKE gate config, from `validate`.
     #[error(transparent)]
     Smoke(#[from] crate::harness::smoke::Error),
+    /// The browser MCP config, from `validate-semantic`.
+    #[error(transparent)]
+    Mcp(#[from] crate::harness::mcp::Error),
     /// The dev server, from `validate`.
     #[error(transparent)]
     DevServer(#[from] crate::harness::devserver::Error),
     /// The chain.
     #[error(transparent)]
     Chain(#[from] chain::Error),
+    /// Skills could not be vendored.
+    #[error(transparent)]
+    Skills(#[from] skills::Error),
+    /// `runner.ts:107-121`: EVALUATE alone needs the recipe to configure it.
+    #[error("{0}")]
+    SemanticNotConfigured(&'static str),
     /// Run files.
     #[error(transparent)]
     Artifacts(#[from] artifacts::Error),
@@ -157,6 +167,197 @@ pub(crate) async fn validate(
     validation.passed = validation.findings.is_empty();
     validation.playwright_gate = Some(result);
     Ok(validation)
+}
+
+/// `runner.ts:70-172`: EVALUATE alone against the workspace as it stands. The node boots so the
+/// app and the validator have a chain; the last increment's PRD/eval pair is graded; artifacts
+/// go to the newest run directory of this workspace, else `.harness-semantic/`.
+pub(crate) async fn validate_semantic(
+    args: ValidateArgs,
+    node_args: NodeArgs,
+) -> Result<crate::harness::findings::Evaluation, Error> {
+    let workspace = args
+        .workspace
+        .clone()
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let workspace = std::path::absolute(&workspace).unwrap_or(workspace);
+    let spec_path = args
+        .spec
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_SPEC_PATH));
+    let loaded = spec::load(&spec_path)?;
+    let spec = &loaded.spec;
+    if !spec.validator_enabled() {
+        return Err(Error::SemanticNotConfigured(
+            "Evaluator is not enabled in the spec (set validator.enabled: true or configure validator).",
+        ));
+    }
+    if spec.eval_paths.is_none() {
+        return Err(Error::SemanticNotConfigured(
+            "EVALUATE requires spec.eval to be configured.",
+        ));
+    }
+    let Some(playwright_path) = spec.validators.playwright_path.clone() else {
+        return Err(Error::SemanticNotConfigured(
+            "EVALUATE requires validators.playwright so the harness can start the dev server.",
+        ));
+    };
+    if spec
+        .chain_validation
+        .as_ref()
+        .is_some_and(|c| c.network == ChainNetwork::Testnet)
+    {
+        return Err(Error::TestnetRefused);
+    }
+
+    let node = boot_node(&node_args, spec, &workspace).await?;
+    let local = LocalChain {
+        rpc_url: format!("http://{}", node.rpc.local_addr),
+        mirror_url: format!("http://{}", node.mirror.local_addr),
+        grpc_url: node.grpc.local_addr.to_string(),
+        chain_id: node.shared.read().chain_id(),
+    };
+
+    // Completed-workspace policy: grade with the last slice's PRD/eval pair.
+    let (prd_path, eval_path) = spec.slice(spec.prd_paths.len().saturating_sub(1));
+    let context = vendor_context(
+        &workspace,
+        artifacts::ISOLATED_CONTEXT_DIR,
+        &prd_path,
+        eval_path.as_deref(),
+    )?;
+    log_phase(
+        "Harness context refreshed for evaluation",
+        Some(
+            context
+                .eval_relative_path
+                .as_deref()
+                .unwrap_or(&context.prd_relative_path),
+        ),
+    );
+
+    let run_directory = artifacts::latest_run_directory(&workspace)
+        .unwrap_or_else(|| workspace.join(".harness-semantic"));
+    let logs_directory = run_directory.join("logs");
+    let prompts_directory = run_directory.join("prompts");
+    for directory in [&logs_directory, &prompts_directory] {
+        std::fs::create_dir_all(directory).map_err(|source| Error::Vendor {
+            path: directory.clone(),
+            source,
+        })?;
+    }
+    let layout =
+        artifacts::Layout::reopen(&run_directory, &spec.jsonl_log_path, &spec.notes_log_path)?;
+    let attempt = artifacts::last_attempt_number(&logs_directory) + 1;
+
+    let mut signer: Option<Signer> = None;
+    if let Some(config) = &spec.chain_validation {
+        let provisioned = {
+            let now = node.clock.now();
+            let mut guard = node.shared.write();
+            chain::provision(&mut guard, config, &run_directory, now)?
+        };
+        log_phase(
+            match (provisioned.reused, provisioned.topped_up_hbar) {
+                (true, Some(_)) => "Chain signer reused + topped up",
+                (true, None) => "Chain signer reused",
+                _ => "Chain signer provisioned",
+            },
+            Some(&match provisioned.topped_up_hbar {
+                Some(hbar) => format!(
+                    "{} (+{hbar} HBAR → {})",
+                    provisioned.signer.account_id, config.funding_hbar
+                ),
+                None => format!(
+                    "{} ({})",
+                    provisioned.signer.account_id, provisioned.signer.evm_address
+                ),
+            }),
+        );
+        signer = Some(provisioned.signer);
+    }
+    log_phase(
+        &format!("Evaluation attempt {attempt} started"),
+        Some(&workspace.display().to_string()),
+    );
+
+    let gate = crate::harness::smoke::load_gate_config(&playwright_path)?;
+    let mut env = local.env();
+    if let (Some(signer), Some(config)) = (&signer, &spec.chain_validation) {
+        env.extend(chain::deploy_env(signer, &config.expose_env_vars));
+    }
+    let dev_server =
+        crate::harness::devserver::start(&workspace, &gate.server, "validate-semantic", &env)
+            .await?;
+    let choice = crate::harness::smoke::resolve_browser();
+    let output_dir = crate::harness::smoke::output_dir(&run_directory);
+    let _ = std::fs::create_dir_all(&output_dir);
+    let outcome: Result<crate::harness::findings::Evaluation, Error> = async {
+        let (extra_args, workspace_file) = match spec.agent.mcp() {
+            spec::McpDelivery::ConfigFlag(flag) => {
+                let config_path = crate::harness::mcp::write_config(&run_directory, &choice)?;
+                (
+                    vec![
+                        flag.to_string(),
+                        config_path.display().to_string(),
+                        "--strict-mcp-config".to_string(),
+                    ],
+                    None,
+                )
+            }
+            spec::McpDelivery::WorkspaceFile(relative) => (
+                Vec::new(),
+                Some(crate::harness::mcp::WorkspaceFile::install(
+                    &workspace,
+                    relative,
+                    &choice,
+                    &output_dir,
+                )?),
+            ),
+        };
+        let evaluation = crate::harness::evaluate::run(crate::harness::evaluate::EvaluationInput {
+            workspace: &workspace,
+            spec,
+            attempt,
+            layout: &layout,
+            server_url: &dev_server.url,
+            signer: signer.as_ref(),
+            eval_relative_path: context.eval_relative_path.as_deref(),
+            extra_args: &extra_args,
+            mirror_base_url: &local.mirror_url,
+            env: env.clone(),
+        })
+        .await;
+        if let Some(file) = workspace_file {
+            file.restore();
+        }
+        Ok(evaluation)
+    }
+    .await;
+    dev_server.stop().await;
+    let _ = std::fs::remove_file(run_directory.join(chain::SIGNER_FILENAME));
+    node.shutdown();
+    let evaluation = outcome?;
+    let result_path = logs_directory.join(format!("evaluation-attempt-{attempt}.json"));
+    artifacts::write_json_file(&result_path, &evaluation)?;
+    log_phase(
+        &format!(
+            "Evaluation {}",
+            if evaluation.passed {
+                "passed"
+            } else {
+                "failed"
+            }
+        ),
+        Some(&format!(
+            "{} finding(s), {}s — {}",
+            evaluation.findings.len(),
+            (evaluation.duration_ms as f64 / 1000.0).round() as u64,
+            result_path.display()
+        )),
+    );
+    Ok(evaluation)
 }
 
 /// What `hanvil run` returns to the CLI.
@@ -281,7 +482,6 @@ async fn drive(
         session,
         starting_attempt,
         cycle,
-        ..
     } = prepared;
     if let Ok(mut current) = CURRENT_RUN_DIR.lock() {
         *current = Some(layout.run_directory.clone());
@@ -369,9 +569,33 @@ async fn drive(
         Some(&workspace.display().to_string()),
     );
 
-    // Skills arrive with skills.rs; until then every run is `--no-skills`, and says so.
-    let skills: Vec<VendoredSkill> = Vec::new();
-    log_phase("Product skills", Some("skipped (--no-skills)"));
+    // `sessionRunner.ts:162-176`.
+    let skills: Vec<VendoredSkill> = if args.no_skills {
+        log_phase("Product skills", Some("skipped (--no-skills)"));
+        Vec::new()
+    } else {
+        let vendored = skills::provide(
+            &spec.project_root,
+            workspace,
+            artifacts::SKILLS_DIR,
+            None,
+            None,
+        )
+        .await?;
+        layout.append_log(&LogEvent::SkillsVendored {
+            count: vendored.len(),
+            workspace_skills_dir: workspace.join(artifacts::SKILLS_DIR),
+        })?;
+        log_phase(
+            "Product skills vendored into ignored runtime",
+            Some(&format!(
+                "{} ({} skill(s))",
+                artifacts::SKILLS_DIR,
+                vendored.len()
+            )),
+        );
+        vendored
+    };
 
     let mut signer: Option<Signer> = None;
     let outcome = async {
@@ -405,7 +629,6 @@ async fn drive(
 
         let chain_handle = ChainHandle {
             shared: Arc::clone(&node.shared),
-            clock: Arc::clone(&node.clock),
             local: local.clone(),
         };
         let slice_count = spec.prd_paths.len();
@@ -423,7 +646,7 @@ async fn drive(
 
         for slice_index in first_slice..slice_count {
             let (prd_path, eval_path) = spec.slice(slice_index);
-            let context = vendor_context(workspace, &prd_path, eval_path.as_deref())?;
+            let context = vendor_context(workspace, CONTEXT_DIR, &prd_path, eval_path.as_deref())?;
             layout.append_log(&LogEvent::ContextVendored {
                 prd_path: PathBuf::from(&context.prd_relative_path),
                 eval_path: context.eval_relative_path.as_ref().map(PathBuf::from),
@@ -642,6 +865,7 @@ fn reload_chain(node: &Node, session: &Session) {
 /// `contextVendor.ts:29-81`: copy the active PRD and eval into `.harness/runtime/context/`.
 fn vendor_context(
     workspace: &Path,
+    context_dir: &str,
     prd_path: &Path,
     eval_path: Option<&Path>,
 ) -> Result<VendoredContext, Error> {
@@ -651,12 +875,12 @@ fn vendor_context(
             source: e,
         })
     };
-    let root = workspace.join(CONTEXT_DIR);
+    let root = workspace.join(context_dir);
     std::fs::create_dir_all(&root).map_err(|e| Error::Vendor {
         path: root.clone(),
         source: e,
     })?;
-    let prd_relative = format!("{CONTEXT_DIR}/prd.md");
+    let prd_relative = format!("{context_dir}/prd.md");
     std::fs::write(workspace.join(&prd_relative), vendor(prd_path)?).map_err(|e| {
         Error::Vendor {
             path: workspace.join(&prd_relative),
@@ -665,7 +889,7 @@ fn vendor_context(
     })?;
     let eval_relative = match eval_path {
         Some(eval) => {
-            let relative = format!("{CONTEXT_DIR}/eval.json");
+            let relative = format!("{context_dir}/eval.json");
             std::fs::write(workspace.join(&relative), vendor(eval)?).map_err(|e| {
                 Error::Vendor {
                     path: workspace.join(&relative),

@@ -40,6 +40,35 @@ pub enum Command {
     Doctor(DoctorArgs),
     /// ASSERT, then the thin SMOKE gate when ASSERT is clean. No agent, no chain.
     Validate(ValidateArgs),
+    /// EVALUATE alone, against the workspace as it stands: boots the node, starts the app,
+    /// grades it with the validator agent.
+    ValidateSemantic(ValidateArgs),
+    /// Bootstrap a harness project from scaffold-hbar, or adopt the project in the target.
+    Init(InitArgs),
+}
+
+/// `hanvil init [DIR] [--repo URL] [--ref REF] [--template NAME] [--skip-install]`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct InitArgs {
+    /// Directory to scaffold into or adopt. Defaults to the current directory.
+    #[arg(value_name = "DIR")]
+    pub target_dir: Option<PathBuf>,
+
+    /// Scaffold repository to clone when the target is new or empty.
+    #[arg(long, value_name = "URL")]
+    pub repo: Option<String>,
+
+    /// Scaffold ref to clone.
+    #[arg(long = "ref", value_name = "REF")]
+    pub ref_name: Option<String>,
+
+    /// Scaffold template name; resolves to the `templates/<NAME>` branch.
+    #[arg(long, value_name = "NAME")]
+    pub template: Option<String>,
+
+    /// Skip `yarn install` after the clone.
+    #[arg(long)]
+    pub skip_install: bool,
 }
 
 /// `hanvil validate [SPEC] [--workspace DIR]`.
