@@ -87,6 +87,12 @@ pub(crate) const RECORDED_TRANSACTION_TYPES: [&str; 6] = [
 /// What stops a recipe from loading.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
+    /// Hanvil: there is no file at the path, which is the first thing a new project hits.
+    #[error("no recipe at {path}. Pass the recipe path, or bootstrap one with `hanvil init`.")]
+    Missing {
+        /// The recipe.
+        path: PathBuf,
+    },
     /// The file could not be read.
     #[error("reading {path}: {source}")]
     Read {
@@ -549,9 +555,17 @@ pub(crate) struct Loaded {
 
 /// Read and validate a recipe file.
 pub(crate) fn load(spec_path: &Path) -> Result<Loaded, Error> {
-    let raw = std::fs::read_to_string(spec_path).map_err(|source| Error::Read {
-        path: spec_path.to_path_buf(),
-        source,
+    let raw = std::fs::read_to_string(spec_path).map_err(|source| {
+        if source.kind() == std::io::ErrorKind::NotFound {
+            Error::Missing {
+                path: spec_path.to_path_buf(),
+            }
+        } else {
+            Error::Read {
+                path: spec_path.to_path_buf(),
+                source,
+            }
+        }
     })?;
     parse(&raw, spec_path)
 }
@@ -1451,6 +1465,19 @@ fn read_optional_string_record(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_missing_recipe_names_the_path_and_hanvil_init() {
+        let path = std::env::temp_dir().join("hanvil-no-such-recipe/spec.yaml");
+        let error = super::load(&path).expect_err("missing file");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "no recipe at {}. Pass the recipe path, or bootstrap one with `hanvil init`.",
+                path.display()
+            )
+        );
+    }
+
     use super::*;
 
     const SPEC_PATH: &str = "/work/project/.harness/spec.yaml";
