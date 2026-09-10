@@ -1,0 +1,31 @@
+{
+  "assertions": [
+    {
+      "id": "E1",
+      "severity": "critical",
+      "route": "/",
+      "statement": "GET / answers JSON with service \"receipts\", a topicId of the form 0.0.N, and network \"local\".",
+      "howToVerify": "Navigate to the server URL. The page body is a JSON object; confirm the three fields and that topicId matches 0.0.<digits>.",
+      "walletRequired": false,
+      "verifiableWithoutCredentials": true
+    },
+    {
+      "id": "E2",
+      "severity": "critical",
+      "route": "/receipts",
+      "statement": "GET /receipts lists at least three receipts read back from the mirror node, oldest first, each a parsed JSON object.",
+      "howToVerify": "Navigate to <server>/receipts. The body is JSON with topicId and a receipts array of at least three objects; the first is the welcome receipt.",
+      "walletRequired": false,
+      "verifiableWithoutCredentials": true
+    },
+    {
+      "id": "E3",
+      "severity": "major",
+      "route": "/nope",
+      "statement": "An unknown path answers 404 with JSON {\"error\": \"not found\"} and no crash banner.",
+      "howToVerify": "Navigate to <server>/nope. The body is that JSON object; no 'Application error' text anywhere.",
+      "walletRequired": false,
+      "verifiableWithoutCredentials": true
+    }
+  ]
+}

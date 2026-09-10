@@ -1,0 +1,13 @@
+{
+  "jsonAssertions": [
+    { "file": "package.json", "path": "name", "equals": "hcs-receipts-api" }
+  ],
+  "fileAssertions": {
+    "required": ["README.md", "server.js", "scripts/seed.js"],
+    "forbidden": [".env", "packages"]
+  },
+  "textAssertions": [
+    { "file": "README.md", "contains": ["npm test", "scripts/seed.js", "/receipts"] },
+    { "file": "server.js", "contains": ["Local: http://127.0.0.1:3000"] }
+  ]
+}

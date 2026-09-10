@@ -1,0 +1,6 @@
+{
+  "commands": [
+    { "name": "install", "command": "npm install", "timeoutMs": 300000 },
+    { "name": "syntax", "command": "node --check server.js && node --check scripts/seed.js", "timeoutMs": 30000 }
+  ]
+}

@@ -1,0 +1,16 @@
+server:
+  command: node server.js
+  url: http://127.0.0.1:3000
+  timeoutMs: 60000
+defaults:
+  timeoutMs: 20000
+  hydrationTimeoutMs: 15000
+  minBodyTextLength: 20
+routes:
+  - name: home
+    path: /
+  - name: receipts
+    path: /receipts
+forbidden:
+  visibleText:
+    - "Application error"

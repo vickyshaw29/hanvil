@@ -1,0 +1,18 @@
+{
+  "name": "hcs-receipts-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "seed": "node scripts/seed.js",
+    "start": "node server.js",
+    "test": "node --test test/",
+    "harness:run": "hanvil run .harness/spec.yaml"
+  },
+  "dependencies": {
+    "@hiero-ledger/sdk": "^2.86.0"
+  }
+}

@@ -1,0 +1,52 @@
+# The dogfood recipe: a backend on HCS, every stage on. The chain assertion asks for three
+# messages where the PRD asks for one welcome receipt, so attempt 1 fails on the chain alone and
+# attempt 2 is a repair — the loop, on purpose, and stated here.
+schemaVersion: 3
+
+name: hcs-receipts-api
+description: A Node JSON API that logs receipts to an HCS topic on the local network.
+
+prd: .harness/prd.md
+eval: .harness/eval.json
+validator:
+  enabled: true
+maxAttempts: 3
+
+requiredFiles:
+  - server.js
+  - scripts/seed.js
+  - test/server.test.js
+  - README.md
+
+validators:
+  static: .harness/validators/static.json
+  commands: .harness/validators/commands.json
+  playwright: .harness/validators/playwright-smoke.yaml
+
+chainValidation:
+  enabled: true
+  network: local
+  fundingHbar: 50
+  deploy:
+    commands:
+      - name: seed
+        command: node scripts/seed.js
+        timeoutMs: 60000
+  assert:
+    - topic: created
+      messagesAtLeast: 3
+    - account: signer
+      minBalanceHbar: 40
+    - transactions:
+        type: CONSENSUSSUBMITMESSAGE
+        payer: signer
+        atLeast: 3
+
+constraints:
+  packageManager: npm
+
+baseline:
+  commands:
+    - name: install
+      command: npm install
+      timeoutMs: 300000

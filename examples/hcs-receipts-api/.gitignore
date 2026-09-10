@@ -1,0 +1,5 @@
+node_modules/
+.harness/runs/
+.harness/runtime/
+.harness/cache/
+.skill-cache/
