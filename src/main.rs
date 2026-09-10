@@ -7,6 +7,7 @@
 mod cli;
 mod evm;
 mod hapi;
+mod harness;
 mod keys;
 mod mirror;
 mod node;
