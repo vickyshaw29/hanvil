@@ -328,7 +328,7 @@ gains one sentence saying the chain was reset.
 ```
 hanvil run [SPEC] [--max-attempts N] [--new | --continue BRANCH] [--workspace DIR] [--no-skills]
 hanvil doctor [SPEC] [--recipe-only]
-hanvil validate [SPEC]              # ASSERT only: no agent, no node
+hanvil validate [SPEC]              # ASSERT, then SMOKE when ASSERT is clean: no agent, no chain
 hanvil validate-semantic [SPEC]     # EVALUATE only, against the workspace as it is
 hanvil init [DIR] [--repo URL] [--ref REF] [--template NAME] [--skip-install]
 ```
