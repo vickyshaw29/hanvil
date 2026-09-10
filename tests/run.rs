@@ -368,6 +368,78 @@ fn a_failed_attempt_reverts_the_chain_under_the_repair() {
 }
 
 #[test]
+fn continue_reloads_the_chain_the_failed_cycle_left() {
+    let repo = fixture_repo("continue");
+    let (ok, stdout, stderr) = run(&[".harness/spec-repair.yaml", "--max-attempts", "1"], &repo);
+    assert!(!ok, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert!(stdout.contains("Run FAILED"), "{stdout}");
+    let branch = git_stdout(&["rev-parse", "--abbrev-ref", "HEAD"], &repo);
+    assert!(
+        branch.starts_with("harness/run-repair-on-hanvil-"),
+        "{branch}"
+    );
+    let first_cycle = jsonl_events(&repo);
+    let first_signer = event(&first_cycle, "chain_signer_provisioned")["accountId"]
+        .as_str()
+        .expect("account id")
+        .to_string();
+    let dump = event(&first_cycle, "chain_state_written")["path"]
+        .as_str()
+        .expect("dump path")
+        .to_string();
+
+    let (ok, stdout, stderr) = run(
+        &[
+            ".harness/spec-repair.yaml",
+            "--continue",
+            &branch,
+            "--max-attempts",
+            "2",
+        ],
+        &repo,
+    );
+    assert!(ok, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    for line in [
+        &format!("[hanvil] Chain reloaded — {dump}"),
+        "[hanvil] Run continued",
+        "[hanvil] Chain assertions — 1 of 1 passed",
+        "Run PASSED",
+    ] {
+        assert!(stdout.contains(line), "missing {line:?} in:\n{stdout}");
+    }
+
+    // The reloaded chain still holds the first cycle's signer, which the fake agent drained, so
+    // the second cycle's signer takes the next id: the chain came from the dump, not genesis.
+    let events = jsonl_events(&repo);
+    let provisioned: Vec<&Value> = events
+        .iter()
+        .filter(|e| e["type"] == "chain_signer_provisioned")
+        .collect();
+    assert_eq!(provisioned.len(), 2);
+    assert_eq!(provisioned[0]["accountId"], first_signer.as_str());
+    assert_ne!(provisioned[1]["accountId"], first_signer.as_str());
+    let second_dump = events
+        .iter()
+        .rfind(|e| e["type"] == "chain_state_written")
+        .expect("second dump")["path"]
+        .as_str()
+        .expect("path")
+        .to_string();
+    let chain: Value =
+        serde_json::from_str(&std::fs::read_to_string(&second_dump).expect("dump")).expect("json");
+    // `accounts` is keyed by entity number, `"1032"` for `0.0.1032`.
+    let number = first_signer.rsplit('.').next().expect("entity number");
+    assert!(
+        chain["accounts"][number].is_object(),
+        "first signer {first_signer} not in the second cycle's dump: {:?}",
+        chain["accounts"]
+            .as_object()
+            .map(|a| a.keys().collect::<Vec<_>>())
+    );
+    let _ = std::fs::remove_dir_all(repo);
+}
+
+#[test]
 fn a_chain_assertion_the_app_cannot_meet_fails_the_run_with_a_runtime_repair() {
     let repo = fixture_repo("assert");
     let (ok, stdout, stderr) = run(&[".harness/spec-assert.yaml", "--max-attempts", "2"], &repo);
