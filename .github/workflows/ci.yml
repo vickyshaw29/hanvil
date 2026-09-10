@@ -173,5 +173,5 @@ jobs:
         if: always()
         with:
           name: hanvil-run
-          path: ${{ runner.temp }}/hanvil-run-*/.harness/runs
+          path: /tmp/hanvil-run-*/.harness/runs
           if-no-files-found: ignore
