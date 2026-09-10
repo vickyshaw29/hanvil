@@ -21,64 +21,84 @@ use crate::state::{Chain, Genesis, Timestamp};
                   persisted; `evm_snapshot` and `evm_revert` put it back."
 )]
 pub struct Args {
+    /// Flags of the node itself. They are global so a subcommand that boots the node in-process
+    /// accepts them after its own name.
+    #[command(flatten)]
+    pub node: NodeArgs,
+}
+
+/// Everything that shapes the chain and its listeners.
+#[derive(clap::Args, Debug, Clone)]
+pub struct NodeArgs {
     /// Interface to bind. 0.0.0.0 exposes the chain beyond this machine.
-    #[arg(long, default_value = "127.0.0.1", env = "HANVIL_HOST")]
+    #[arg(long, global = true, default_value = "127.0.0.1", env = "HANVIL_HOST")]
     pub host: String,
 
     /// JSON-RPC port, in the relay's shape. 0 picks a free port.
-    #[arg(long, short = 'p', default_value_t = 7546, env = "HANVIL_PORT")]
+    #[arg(
+        long,
+        short = 'p',
+        global = true,
+        default_value_t = 7546,
+        env = "HANVIL_PORT"
+    )]
     pub port: u16,
 
     /// Mirror node REST port. 0 picks a free port.
-    #[arg(long, default_value_t = 5551, env = "HANVIL_MIRROR_PORT")]
+    #[arg(
+        long,
+        global = true,
+        default_value_t = 5551,
+        env = "HANVIL_MIRROR_PORT"
+    )]
     pub mirror_port: u16,
 
     /// HAPI gRPC port. 0 picks a free port.
-    #[arg(long, default_value_t = 50211, env = "HANVIL_GRPC_PORT")]
+    #[arg(long, global = true, default_value_t = 50211, env = "HANVIL_GRPC_PORT")]
     pub grpc_port: u16,
 
     /// EVM chain id. 298 is Hedera local, 296 testnet, 31337 mimics hardhat.
-    #[arg(long, default_value_t = 298, env = "HANVIL_CHAIN_ID")]
+    #[arg(long, global = true, default_value_t = 298, env = "HANVIL_CHAIN_ID")]
     pub chain_id: u64,
 
     /// Predefined accounts per key type (ECDSA, ECDSA-alias, ED25519). Max 10.
-    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u8).range(1..=10))]
+    #[arg(long, global = true, default_value_t = 10, value_parser = clap::value_parser!(u8).range(1..=10))]
     pub accounts: u8,
 
     /// Starting balance of each predefined account, in HBAR.
-    #[arg(long, default_value_t = 10_000)]
+    #[arg(long, global = true, default_value_t = 10_000)]
     pub balance: u64,
 
     /// Gas price in tinybar per gas. Offering less is refused, as on the relay; fees go to
     /// 0.0.98.
-    #[arg(long, default_value_t = 71, env = "HANVIL_GAS_PRICE")]
+    #[arg(long, global = true, default_value_t = 71, env = "HANVIL_GAS_PRICE")]
     pub gas_price: u64,
 
     /// Accept HAPI transactions without checking their signatures. Useful when replaying a body
     /// signed for another network; every other check still runs.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub no_sig_verify: bool,
 
     /// Mine an empty block every N seconds. Transactions still mine their own block the moment
     /// they arrive — this adds empty blocks so time advances on its own, it does not batch.
-    #[arg(long, value_name = "SECONDS")]
+    #[arg(long, global = true, value_name = "SECONDS")]
     pub block_time: Option<u64>,
 
     /// Load the chain from this file at boot, and write it back on exit. Genesis flags are
     /// ignored when the file exists: the state in it decides the chain id and the accounts.
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, global = true, value_name = "FILE")]
     pub state: Option<PathBuf>,
 
     /// Write the chain to this file on exit. Takes precedence over `--state` for the write.
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, global = true, value_name = "FILE")]
     pub dump_state: Option<PathBuf>,
 
     /// Print nothing.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub silent: bool,
 }
 
-impl Args {
+impl NodeArgs {
     /// Where the chain is written on exit, if anywhere.
     pub fn dump_path(&self) -> Option<&PathBuf> {
         self.dump_state.as_ref().or(self.state.as_ref())
@@ -98,7 +118,7 @@ impl Args {
 
 /// Boot banner: endpoints, accounts, and how long boot took.
 pub fn banner(
-    args: &Args,
+    args: &NodeArgs,
     chain: &Chain,
     rpc: SocketAddr,
     mirror: SocketAddr,

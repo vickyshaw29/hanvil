@@ -9,6 +9,7 @@ mod evm;
 mod hapi;
 mod keys;
 mod mirror;
+mod node;
 mod rpc;
 mod serve;
 mod state;
@@ -18,68 +19,35 @@ use std::time::Instant;
 
 use anyhow::Context as _;
 use clap::Parser;
-use parking_lot::RwLock;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let started = Instant::now();
     let args = cli::Args::parse();
-    init_tracing(args.silent);
+    init_tracing(args.node.silent);
+    serve_node(&args.node, started).await
+}
 
+/// The bare node: boot, print the banner, run until ctrl-c, dump state if asked.
+async fn serve_node(args: &cli::NodeArgs, started: Instant) -> anyhow::Result<()> {
     let clock: Arc<dyn state::Clock> = Arc::new(state::time::SystemClock);
-    let chain = match args.state.as_ref().filter(|path| path.exists()) {
-        Some(path) => {
-            let json = std::fs::read_to_string(path)
-                .with_context(|| format!("reading chain state from {}", path.display()))?;
-            state::Chain::from_json(&json)
-                .with_context(|| format!("parsing chain state from {}", path.display()))?
-        }
-        None => {
-            state::Chain::genesis(&args.genesis(clock.now())).context("building genesis state")?
-        }
-    };
-    let shared: serve::Shared = Arc::new(RwLock::new(chain));
-
-    let grpc_clock = Arc::clone(&clock);
-    let rpc = rpc::serve(
-        rpc::App {
-            chain: Arc::clone(&shared),
-            clock,
-        },
-        &args.host,
-        args.port,
-    )
-    .await
-    .context("starting JSON-RPC listener")?;
-    let mirror = mirror::serve(Arc::clone(&shared), &args.host, args.mirror_port)
-        .await
-        .context("starting mirror REST listener")?;
-    let grpc = hapi::serve(
-        hapi::Node {
-            chain: Arc::clone(&shared),
-            clock: Arc::clone(&grpc_clock),
-            verify_signatures: !args.no_sig_verify,
-        },
-        &args.host,
-        args.grpc_port,
-    )
-    .await
-    .context("starting HAPI gRPC listener")?;
+    let chain = node::load_or_genesis(args, clock.as_ref())?;
+    let node = node::Node::boot(args, chain, clock).await?;
 
     if !args.silent {
         cli::banner(
-            &args,
-            &shared.read(),
-            rpc.local_addr,
-            mirror.local_addr,
-            grpc.local_addr,
+            args,
+            &node.shared.read(),
+            node.rpc.local_addr,
+            node.mirror.local_addr,
+            node.grpc.local_addr,
             started.elapsed(),
         );
     }
 
-    let mining = args
-        .block_time
-        .map(|seconds| mine_on_interval(Arc::clone(&shared), Arc::clone(&grpc_clock), seconds));
+    let mining = args.block_time.map(|seconds| {
+        mine_on_interval(Arc::clone(&node.shared), Arc::clone(&node.clock), seconds)
+    });
 
     tokio::signal::ctrl_c()
         .await
@@ -88,9 +56,8 @@ async fn main() -> anyhow::Result<()> {
     if let Some(task) = mining {
         task.abort();
     }
-    rpc.task.abort();
-    mirror.task.abort();
-    grpc.task.abort();
+    let shared = Arc::clone(&node.shared);
+    node.shutdown();
 
     if let Some(path) = args.dump_path() {
         let json = shared.read().to_json().context("serialising chain state")?;
