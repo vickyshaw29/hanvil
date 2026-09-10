@@ -41,7 +41,7 @@ schema-v3 recipes, a chain snapshot per attempt, and deterministic chain asserti
 | JS tests | `@hiero-ledger/sdk` ^2.86, `viem` ^2, Node 20 | | `tests/js/`, run against a built binary |
 | Harness | `hedera-harness@next` (2.0.0-rc.4, schemaVersion 3) | | PRs against `dev`; `hanvil run` ports it (dev @ `587a2f3`) |
 | YAML | `serde_yaml_ng` | 0.10.0 | recipes; transcoded to `serde_json::Value` at load, one `Value` API for YAML and JSON |
-| Regex | `regex` | 1.13 | user-supplied secret-scan patterns; `default-features = false`, `std`, `unicode-perl`, `perf` |
+| Regex | `regex` | 1.13 | user-supplied secret-scan patterns; `default-features = false`, `std`, `unicode-perl`, `unicode-case`, `perf` |
 | RNG | `rand_core` | 0.6 (`getrandom`) | ephemeral ECDSA signer keys for `hanvil run` |
 
 Deny list: no `ethers-rs`, no `web3`, no `actix`, no `reqwest` in the binary (Hanvil makes no

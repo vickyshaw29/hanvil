@@ -12,9 +12,12 @@ use std::process::ExitCode;
 use crate::cli;
 
 pub(crate) mod agent;
+pub(crate) mod artifacts;
 pub(crate) mod command;
 pub(crate) mod doctor;
 pub(crate) mod env;
+pub(crate) mod findings;
+pub(crate) mod git;
 pub(crate) mod spec;
 
 /// `promptTemplates.ts:13-21`.

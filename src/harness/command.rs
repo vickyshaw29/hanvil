@@ -114,7 +114,7 @@ pub(crate) struct Execute<'a> {
 }
 
 /// `types.ts` `CommandExecutionResult`.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Execution {
     /// As requested.

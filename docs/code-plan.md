@@ -68,7 +68,7 @@ hanvil/
 | --- | --- | --- |
 | `base64` | 0.22 | The mirror's `format: byte` fields (`transaction_hash`, `memo_base64`, and Day 3's topic `message`) are base64. Already in the lock file as a transitive dependency; MIT/Apache-2.0. |
 | `serde_yaml_ng` | 0.10.0 | Recipes are YAML (§16). Maintained fork of `serde_yaml` with the same API; brings `unsafe-libyaml` (a libyaml port, `unsafe` inside that crate only — `main.rs` still forbids it in ours). Loaded as `serde_json::Value` so one `Value` API serves `spec.yaml` and `validators/*.json`. MIT/Apache-2.0. Added 2026-09-10. |
-| `regex` | 1.13 | `secretScan.patterns` are user-supplied `RegExp` strings (§16). Already in the lock as a build-dependency of `prost-build`; `default-features = false` with `std`, `unicode-perl`, `perf` keeps the binary small. MIT/Apache-2.0. Added 2026-09-10. |
+| `regex` | 1.13 | `secretScan.patterns` are user-supplied `RegExp` strings (§16), and the secret-path markers are case-insensitive. Already in the lock as a build-dependency of `prost-build`; `default-features = false` with `std`, `unicode-perl`, `unicode-case`, `perf` keeps the binary small — without `unicode-case`, `(?i)` fails to compile. MIT/Apache-2.0. Added 2026-09-10. |
 | `rand_core` | 0.6 (`getrandom`) | `k256::ecdsa::SigningKey::random` for the per-run signer (§16). Already in the lock via `elliptic-curve`; `k256` stays at 0.13. MIT/Apache-2.0. Added 2026-09-10. |
 | `tokio` features `process`, `io-util`, `fs` | 1.53 | Spawning the agent CLI, `git`, `npx` and recipe commands; reading their pipes; writing artifacts. No new crates on Unix. Added 2026-09-10. |
 
