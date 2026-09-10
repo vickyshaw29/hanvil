@@ -17,8 +17,10 @@ use crate::state::{Chain, Genesis, Timestamp};
     about,
     long_about = "One in-memory Hedera chain behind three listeners: the JSON-RPC relay on 7546, \
                   the mirror node REST API on 5551, and HAPI gRPC on 50211 — the ports \
-                  hiero-local-node uses, with the same thirty predefined accounts. State is not \
-                  persisted; `evm_snapshot` and `evm_revert` put it back."
+                  hiero-local-node uses, with the same thirty predefined accounts. \
+                  `evm_snapshot` and `evm_revert` put the chain back; `--state FILE` keeps it \
+                  across restarts. `hanvil run` drives a coding agent against this chain from a \
+                  hedera-harness recipe; `hanvil doctor` checks the recipe and the host first."
 )]
 pub struct Args {
     /// Flags of the node itself. They are global so a subcommand that boots the node in-process
