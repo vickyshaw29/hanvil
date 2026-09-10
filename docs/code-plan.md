@@ -387,7 +387,10 @@ writes `status.json{phase:"interrupted"}`. Every `Chain` access is a block-scope
 Run-log events beyond the upstream set: `chain_snapshot_taken`, `chain_snapshot_reverted`,
 `chain_state_written` (with `bytes`) and `chain_assertions_finished`; those and
 `chain_signer_provisioned` carry `durationMicros`, measured inside the lock, and the console line
-prints the same number. The README quotes only those numbers.
+prints the same number. The README quotes only those numbers. SMOKE navigates the MCP browser to
+`about:blank` before the first route — upstream's `launchSharedBrowser` — and records the launch
+as `browserLaunchMs` in `playwright-gate-attempt-N.json`; on CI's first run a cold Chrome start
+had been charged to the first route's 20 s timeout.
 
 First real run, 2026-09-10 (`examples/hcs-receipts-api`, `claude`): PASSED in 9 min 32 s over two
 attempts; attempt 1 failed SMOKE on a favicon 404 console error, the chain was reverted, attempt 2

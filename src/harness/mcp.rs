@@ -23,8 +23,9 @@ pub(crate) const PACKAGE: &str = "@playwright/mcp@0.0.80";
 pub(crate) const MARKER: &str = "--headless";
 /// MCP protocol revision the server speaks.
 const PROTOCOL_VERSION: &str = "2024-11-05";
-/// `mcpBrowser.ts` probe cap.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+/// `mcpBrowser.ts` probe cap, and the cap on launching the browser before SMOKE's first route.
+pub(crate) const LAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
+const PROBE_TIMEOUT: Duration = LAUNCH_TIMEOUT;
 
 /// What can go wrong between the harness and the server.
 #[derive(Debug, thiserror::Error)]

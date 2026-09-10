@@ -12,6 +12,7 @@ use crate::harness::devserver;
 use crate::harness::evaluate::balanced_json_objects;
 use crate::harness::findings::{Category, Finding, PlaywrightGateResult, RouteResult};
 use crate::harness::mcp::{self, BrowserChoice, Client};
+use crate::harness::session::log_phase;
 
 /// `playwrightGate.ts:32-34`.
 const DEFAULT_ROUTE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -163,23 +164,45 @@ pub(crate) async fn run_gate(
     let server_url = dev_server.url.clone();
     let mut routes = Vec::new();
     let mut findings = Vec::new();
+    let mut browser_launch_ms = None;
+    let gate_failed = |details: String| {
+        Finding::new(
+            "playwright:gate",
+            Category::Playwright,
+            "Playwright gate failed before route checks completed",
+        )
+        .with_details(details)
+    };
 
     let client = Client::spawn(choice, output_dir, workspace).await;
     match client {
-        Err(error) => findings.push(
-            Finding::new(
-                "playwright:gate",
-                Category::Playwright,
-                "Playwright gate failed before route checks completed",
-            )
-            .with_details(error.to_string()),
-        ),
+        Err(error) => findings.push(gate_failed(error.to_string())),
         Ok(mut client) => {
-            for route in &gate.routes {
-                let (result, route_findings) =
-                    check_route(&mut client, gate, route, &server_url, dev_server).await;
-                routes.push(result);
-                findings.extend(route_findings);
+            // `launchSharedBrowser` (`playwrightGate.ts:80`) runs before the first route. The
+            // MCP server launches its browser on the first navigation, so navigate once here:
+            // a cold Chromium start on a loaded CI runner is not a route's timeout to pay.
+            let launch = Instant::now();
+            let warmed = client
+                .call(
+                    "browser_navigate",
+                    json!({ "url": "about:blank" }),
+                    mcp::LAUNCH_TIMEOUT,
+                )
+                .await;
+            match warmed {
+                Ok(call) if !call.is_error => {
+                    let elapsed = launch.elapsed().as_millis() as u64;
+                    browser_launch_ms = Some(elapsed);
+                    log_phase("SMOKE browser ready", Some(&format!("{elapsed} ms")));
+                    for route in &gate.routes {
+                        let (result, route_findings) =
+                            check_route(&mut client, gate, route, &server_url, dev_server).await;
+                        routes.push(result);
+                        findings.extend(route_findings);
+                    }
+                }
+                Ok(call) => findings.push(gate_failed(call.text)),
+                Err(error) => findings.push(gate_failed(error.to_string())),
             }
             client.close().await;
         }
@@ -192,6 +215,7 @@ pub(crate) async fn run_gate(
         server_command: dev_server.command.clone(),
         routes,
         duration_ms: started.elapsed().as_millis() as u64,
+        browser_launch_ms,
     };
     (result, findings)
 }

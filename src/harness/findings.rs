@@ -148,6 +148,9 @@ pub(crate) struct PlaywrightGateResult {
     pub(crate) routes: Vec<RouteResult>,
     /// Wall time for the gate.
     pub(crate) duration_ms: u64,
+    /// Hanvil: time to the browser's first `about:blank`, before any route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) browser_launch_ms: Option<u64>,
 }
 
 /// `types.ts:243-250`.

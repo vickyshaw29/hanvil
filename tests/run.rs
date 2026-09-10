@@ -533,6 +533,9 @@ fn the_smoke_gate_walks_the_routes_and_names_the_forbidden_text() {
     for line in [
         "[hanvil] Stage 4/5 SMOKE — booting dev server",
         "[hanvil:runtime:server] Local: http://127.0.0.1:47391",
+        // The browser is launched before the first route, as upstream's launchSharedBrowser
+        // does, so a cold Chromium start is never charged to a route's timeout.
+        "[hanvil] SMOKE browser ready — ",
         "[hanvil] Attempt 1 FAILED — 3 open",
         "- [playwright] playwright:route:broken:forbidden:application-error: Playwright gate route /broken contains forbidden text: \"Application error\"",
         "- [playwright] playwright:route:missing:status: Playwright gate route /nope returned HTTP 404",
@@ -551,6 +554,7 @@ fn the_smoke_gate_walks_the_routes_and_names_the_forbidden_text() {
     )
     .expect("json");
     assert_eq!(gate["passed"], false);
+    assert!(gate["browserLaunchMs"].is_u64(), "{gate}");
     assert_eq!(gate["serverUrl"], "http://127.0.0.1:47391");
     assert_eq!(gate["serverCommand"], "node server.js");
     let routes = gate["routes"].as_array().expect("routes");
