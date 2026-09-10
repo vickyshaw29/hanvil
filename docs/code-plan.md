@@ -67,6 +67,10 @@ hanvil/
 | Crate | Version | Why |
 | --- | --- | --- |
 | `base64` | 0.22 | The mirror's `format: byte` fields (`transaction_hash`, `memo_base64`, and Day 3's topic `message`) are base64. Already in the lock file as a transitive dependency; MIT/Apache-2.0. |
+| `serde_yaml_ng` | 0.10.0 | Recipes are YAML (§16). Maintained fork of `serde_yaml` with the same API; brings `unsafe-libyaml` (a libyaml port, `unsafe` inside that crate only — `main.rs` still forbids it in ours). Loaded as `serde_json::Value` so one `Value` API serves `spec.yaml` and `validators/*.json`. MIT/Apache-2.0. Added 2026-09-10. |
+| `regex` | 1.13 | `secretScan.patterns` are user-supplied `RegExp` strings (§16). Already in the lock as a build-dependency of `prost-build`; `default-features = false` with `std`, `unicode-perl`, `perf` keeps the binary small. MIT/Apache-2.0. Added 2026-09-10. |
+| `rand_core` | 0.6 (`getrandom`) | `k256::ecdsa::SigningKey::random` for the per-run signer (§16). Already in the lock via `elliptic-curve`; `k256` stays at 0.13. MIT/Apache-2.0. Added 2026-09-10. |
+| `tokio` features `process`, `io-util`, `fs` | 1.53 | Spawning the agent CLI, `git`, `npx` and recipe commands; reading their pipes; writing artifacts. No new crates on Unix. Added 2026-09-10. |
 
 ## 3. State model
 
@@ -344,3 +348,38 @@ Consensus, gossip, multi-node, staking, HTS/HFS/scheduled transactions (beyond `
 answers), KeyList/threshold signatures, fee schedules and exchange-rate fidelity, HFS-based large
 contract deploys, state forking from testnet/mainnet, mirror gRPC (5600), relay WebSocket (8546),
 block-node, persistence across restarts unless `--state` is given.
+
+Harness (§16): `chainValidation.network: testnet` (refused with a message naming `hedera-harness`),
+Windows, the Cursor `.cursor/mcp.json` MCP mode against a real Cursor install, HTTP status of a
+route when Chromium lacks `PerformanceNavigationTiming.responseStatus`.
+
+## 16. Harness — `hanvil run` (added 2026-09-10)
+
+A port of `hedera-dev/hedera-harness` `dev` @ `587a2f3` (v2.0.0-rc.4, schema v3) into
+`src/harness/`, driving the in-process chain. The design, module map, recipe additions, tests and
+schedule are in the approved plan (`~/.claude/plans/build-a-plan-first-bright-swan.md`, mirrored in
+`plan.md` §15); this section records what the code must satisfy.
+
+Surface: `hanvil run [SPEC] [--max-attempts N] [--new | --continue BRANCH] [--workspace DIR]
+[--no-skills]`, `hanvil doctor [SPEC] [--recipe-only]`, `hanvil init [DIR] …`, `hanvil validate
+[SPEC]`, `hanvil validate-semantic [SPEC]`. Bare `hanvil` is still the node. Node flags are global.
+
+Stages per attempt: GENERATE → ASSERT → CHAIN (deploy, `advanceTimeSeconds`, `assert`) → SMOKE →
+EVALUATE, with the TypeScript short-circuits. `Chain::snapshot()` before GENERATE; `revert()` after
+a failed attempt when attempts remain (`snapshotPerAttempt: false` opts out); a state dump
+(`Chain::to_json`) after every validation so `hanvil --state` replays it and `--continue` reloads
+it. The signer is created with `Chain::apply_hapi(Body::CreateAccount)` from `0.0.1002`, no
+signature involved; swept with `Body::Delete`.
+
+Recipe additions over schema v3: `chainValidation.{snapshotPerAttempt, advanceTimeSeconds,
+assert[]}`; `network: local` needs no `operator`. Everything else — keys, defaults, error strings,
+prompts, artifact layout, git behaviour, console lines — is copied from the TypeScript source and
+cited by `file:line` in the code. Documented deviations: the `claude` preset's idle timeout is
+600 s (a `Bash` tool call is silent until it returns); `CLAUDECODE`/`CLAUDE_CODE_*` are stripped
+from the agent's env; a dev server that never prints `Local:` is accepted if `server.url` answers;
+`@playwright/mcp` is pinned at 0.0.80 and spoken to over stdio by the harness itself for SMOKE.
+
+Subprocesses are spawned in their own process group and stopped with `pkill -TERM -g` then
+`pkill -KILL -g`; both pipes are drained from the first byte; Ctrl-C kills every live group and
+writes `status.json{phase:"interrupted"}`. Every `Chain` access is a block-scoped lock with no
+`.await` inside.

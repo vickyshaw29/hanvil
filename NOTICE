@@ -9,3 +9,10 @@ proto/services/*.proto — Hedera API (HAPI) protocol buffer definitions.
 Predefined account keys (src/keys/predefined.rs) are the published development keys of
 hiero-ledger/hiero-local-node (src/configuration/accountConfiguration.json), reproduced so that
 tooling configured for that project works unchanged. They are public and must never hold value.
+
+src/harness/ — a Rust port of hedera-harness.
+  Source: https://github.com/hedera-dev/hedera-harness, branch dev, commit 587a2f3 (v2.0.0-rc.4).
+  License: MIT. Copyright Hedera Hashgraph, LLC.
+  The prompt templates (src/harness/prompts/*.md), the project skeletons (src/harness/skeletons/),
+  the recipe schema, finding identifiers, console and error strings are reproduced or translated
+  from that repository so recipes and agents behave the same under both harnesses.

@@ -15,8 +15,10 @@ Working directory is `/Users/vicky/Desktop/dev/hanvil`. Use absolute paths.
 mirror REST :5551, HAPI gRPC :50211 — so `@hiero-ledger/sdk`, viem/wagmi, hardhat, foundry and
 `hedera-harness` connect without knowing it is not hiero-local-node. Anvil ergonomics on top:
 predefined accounts, `evm_snapshot`/`evm_revert`, time travel, impersonation, sub-100 ms boot.
-Two PRs to `hedera-dev/hedera-harness` (`dev` branch) make the harness run on it.
-Deadline Sun 2026-09-13 21:30 IST.
+Two PRs to `hedera-dev/hedera-harness` (`dev` branch) make the harness run on it. The same binary
+is also the harness: `hanvil run` drives a coding agent against the in-process chain with
+schema-v3 recipes, a chain snapshot per attempt, and deterministic chain assertions
+(`docs/code-plan.md` §16). Deadline Sun 2026-09-13 21:30 IST.
 
 ## 2. Stack — exact, pinned, no substitutions without a note in `docs/code-plan.md`
 
@@ -29,7 +31,7 @@ Deadline Sun 2026-09-13 21:30 IST.
 | gRPC | `tonic` + `tonic-prost-build` | 0.14.6 | h2c plaintext; codegen in `build.rs` |
 | Protobuf | `prost`, `prost-build`, `protoc-bin-vendored` | 0.14.4 | 119-file HAPI closure vendored in `proto/services/` |
 | HTTP | `axum` | 0.8.9 | JSON-RPC and mirror REST on separate listeners |
-| Runtime | `tokio` | 1.53.1 | `rt-multi-thread`, `macros`, `signal`, `net` |
+| Runtime | `tokio` | 1.53.1 | `rt-multi-thread`, `macros`, `signal`, `net`, `time`, `sync`, `process`, `io-util`, `fs` |
 | Serde | `serde`, `serde_json` | latest 1.x | `#[serde(rename_all = "snake_case")]` for mirror, hex quantities for RPC |
 | Crypto | `k256` 0.14 (`ecdsa`), `ed25519-dalek` 2.x, `sha2` (SHA-384 running hash), `sha3`/alloy keccak | | signature verification of HAPI bodies |
 | CLI | `clap` | 4.6.6 | derive; `--help` reads like Anvil's |
@@ -37,7 +39,10 @@ Deadline Sun 2026-09-13 21:30 IST.
 | Logs | `tracing`, `tracing-subscriber` | | one line per tx; `--silent` |
 | Lock | `parking_lot::RwLock` | | sync lock, never held across `.await` |
 | JS tests | `@hiero-ledger/sdk` ^2.86, `viem` ^2, Node 20 | | `tests/js/`, run against a built binary |
-| Harness | `hedera-harness@next` (2.0.0-rc.4, schemaVersion 3) | | PRs against `dev` |
+| Harness | `hedera-harness@next` (2.0.0-rc.4, schemaVersion 3) | | PRs against `dev`; `hanvil run` ports it (dev @ `587a2f3`) |
+| YAML | `serde_yaml_ng` | 0.10.0 | recipes; transcoded to `serde_json::Value` at load, one `Value` API for YAML and JSON |
+| Regex | `regex` | 1.13 | user-supplied secret-scan patterns; `default-features = false`, `std`, `unicode-perl`, `perf` |
+| RNG | `rand_core` | 0.6 (`getrandom`) | ephemeral ECDSA signer keys for `hanvil run` |
 
 Deny list: no `ethers-rs`, no `web3`, no `actix`, no `reqwest` in the binary (Hanvil makes no
 outbound calls), no `unsafe`, no `lazy_static` (use `std::sync::LazyLock`), no `chrono` (use
@@ -68,7 +73,9 @@ outbound calls), no `unsafe`, no `lazy_static` (use `std::sync::LazyLock`), no `
    `evm_increaseTime` / `evm_setNextBlockTimestamp` mutate `Chain`, not the clock.
 8. **Snapshot = clone.** `Chain: Clone`. `evm_revert(id)` swaps and truncates later snapshots.
    Anything added to `Chain` must be `Clone` + `Serialize` or it does not go in `Chain`.
-9. **No outbound network calls.** Hanvil is hermetic. The binary never fetches anything.
+9. **No outbound network calls from the node.** The binary never opens an outbound socket.
+    `hanvil run` spawns subprocesses — the agent CLI, `git`, `npx`, the recipe's own commands —
+    and those do talk to the network; the harness itself only reads their stdout.
 10. **Bind `127.0.0.1` by default.** `--host 0.0.0.0` is explicit.
 
 ## 4. Code quality gates (CI fails otherwise)
@@ -169,7 +176,7 @@ outbound calls), no `unsafe`, no `lazy_static` (use `std::sync::LazyLock`), no `
 ## 11. Documentation practice
 
 - README order: one-line what → measured numbers table → 3-command quickstart → endpoint table →
-  what is emulated / what is not (one flat list) → harness integration → architecture diagram →
+  what is emulated / what is not (one flat list) → harness (`hanvil run`, then the upstream PRs) → architecture diagram →
   licence and NOTICE. No adjectives. Every number in the README was produced by a command that is
   also in the README.
 - Every stub is declared in "not emulated". A stub a judge finds costs more than ten declared.

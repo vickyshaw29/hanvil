@@ -2,8 +2,15 @@ research/
 target/
 node_modules/
 .harness/
-# The CI fixture is a checked-in harness project; it is the only .harness/ that belongs in git.
+# Checked-in harness projects: the CI fixture, the smoke fixture and the examples. Their run
+# artifacts are re-ignored below so a `hanvil run` inside them never stages a signer key.
 !tests/harness/.harness/
+!tests/harness-smoke/.harness/
+!examples/*/.harness/
+**/.harness/runs/
+**/.harness/runtime/
+**/.harness/cache/
+**/.skill-cache/
 *.log
 plan.md
 private/
