@@ -1,0 +1,25 @@
+# A chain assertion the app can never satisfy: the signer is funded with 10 ℏ and the recipe
+# demands 100. Every attempt fails on the chain alone, so the repair prompt is runtime-scoped
+# and carries the chain finding.
+schemaVersion: 3
+name: assert-on-hanvil
+prd: .harness/prd.md
+generator:
+  provider: command
+  command: bash
+  args:
+    - -c
+    - "printf 'ok\\n' > generated.txt"
+requiredFiles:
+  - generated.txt
+chainValidation:
+  enabled: true
+  network: local
+  fundingHbar: 10
+  assert:
+    - account: signer
+      minBalanceHbar: 100
+baseline:
+  commands:
+    - name: install
+      command: "true"

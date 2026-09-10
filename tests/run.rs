@@ -273,3 +273,126 @@ fn a_dirty_tree_and_conflicting_flags_are_refused_with_upstreams_words() {
     );
     let _ = std::fs::remove_dir_all(repo);
 }
+
+#[test]
+fn a_failed_attempt_reverts_the_chain_under_the_repair() {
+    let repo = fixture_repo("revert");
+    let (ok, stdout, stderr) = run(&[".harness/spec-repair.yaml", "--max-attempts", "3"], &repo);
+    assert!(ok, "stdout:\n{stdout}\nstderr:\n{stderr}");
+
+    for line in [
+        "[hanvil] Stage 3/5 CHAIN — skipped — deterministic gates are not clean",
+        "[hanvil] Attempt 1 FAILED — 1 open, 1 new",
+        "[hanvil] Chain reverted — attempt 2 starts on the state attempt 1 started on",
+        "[hanvil] Stage 1/5 GENERATE — repair, attempt 2 [opus, escalated — last attempt fixed nothing]",
+        "[hanvil] Chain assertions — 1 of 1 passed",
+        "[hanvil] Attempt 2 PASSED — deterministic gates passed",
+        "Run PASSED",
+        "attempts=2/3",
+        "findings=0 open, 1 fixed",
+        "Closed by the last attempt (1):",
+        "- required-file:generated.txt",
+    ] {
+        assert!(stdout.contains(line), "missing {line:?} in:\n{stdout}");
+    }
+
+    let events = jsonl_events(&repo);
+    let reverted = event(&events, "chain_snapshot_reverted");
+    assert_eq!(reverted["attempt"], 1);
+    assert_eq!(reverted["snapshotId"], "0x0");
+    assert_eq!(reverted["success"], true);
+    let taken: Vec<&Value> = events
+        .iter()
+        .filter(|e| e["type"] == "chain_snapshot_taken")
+        .collect();
+    assert_eq!(taken.len(), 2);
+    assert_eq!(
+        taken[1]["snapshotId"], "0x1",
+        "ids are never reused after a revert"
+    );
+    let signer = event(&events, "chain_signer_provisioned")["accountId"]
+        .as_str()
+        .expect("account id")
+        .trim_start_matches("0.0.")
+        .to_string();
+
+    let run_dir = run_directory(&repo);
+    let dump = |attempt: u32| -> Value {
+        serde_json::from_str(
+            &std::fs::read_to_string(
+                run_dir.join(format!("logs/chain-state-attempt-{attempt}.json")),
+            )
+            .expect("dump"),
+        )
+        .expect("json")
+    };
+    // Attempt 1 drained the signer; attempt 2 ran on the reverted chain with it funded again.
+    assert_eq!(dump(1)["accounts"][&signer]["balance"], 0);
+    assert_eq!(dump(2)["accounts"][&signer]["balance"], 1_000_000_000);
+
+    let repair = std::fs::read_to_string(run_dir.join("prompts/repair-attempt-2.txt"))
+        .expect("repair prompt");
+    assert!(
+        repair.contains("The local chain was reset to the state before your previous attempt"),
+        "{repair}"
+    );
+    assert!(repair.contains("Repair scope: **broad**"), "{repair}");
+    assert!(
+        repair.contains("- [files] Required file is missing: generated.txt"),
+        "{repair}"
+    );
+    assert!(
+        !repair.contains("[chain]"),
+        "CHAIN did not run on attempt 1, so no chain finding: {repair}"
+    );
+    assert_eq!(
+        git_stdout(&["log", "--format=%s", "-2"], &repo),
+        "harness: run attempt 2 passed\nharness: run attempt 1 failed"
+    );
+    let _ = std::fs::remove_dir_all(repo);
+}
+
+#[test]
+fn a_chain_assertion_the_app_cannot_meet_fails_the_run_with_a_runtime_repair() {
+    let repo = fixture_repo("assert");
+    let (ok, stdout, stderr) = run(&[".harness/spec-assert.yaml", "--max-attempts", "2"], &repo);
+    assert!(!ok, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    for line in [
+        "[hanvil] Chain assertions — 0 of 1 passed",
+        "[hanvil] Stage 4/5 SMOKE — skipped — chain assertions failed",
+        "[hanvil] Attempt 1 FAILED — 1 open",
+        "[hanvil] Attempt 2 FAILED — 1 open",
+        "Run FAILED",
+        "attempts=2/2",
+        "findings=1 open",
+        "Open findings:",
+        "- [chain] chain:0:account: Chain assertion 0 (account) failed: account 0.0.",
+        "holds 10 ℏ, below the required 100 ℏ",
+        "  hanvil run .harness/spec-assert.yaml --new",
+    ] {
+        assert!(stdout.contains(line), "missing {line:?} in:\n{stdout}");
+    }
+    let run_dir = run_directory(&repo);
+    let repair = std::fs::read_to_string(run_dir.join("prompts/repair-attempt-2.txt"))
+        .expect("repair prompt");
+    assert!(repair.contains("Repair scope: **runtime**"), "{repair}");
+    assert!(
+        repair.contains("- [chain] Chain assertion 0 (account) failed"),
+        "{repair}"
+    );
+    let report: Value = serde_json::from_str(
+        &std::fs::read_to_string(run_dir.join("reports/report.json")).expect("report"),
+    )
+    .expect("json");
+    assert_eq!(report["passed"], false);
+    assert_eq!(
+        report["openFindingIds"],
+        serde_json::json!(["chain:0:account"])
+    );
+    let session: Value = serde_json::from_str(
+        &std::fs::read_to_string(run_dir.join("session.json")).expect("session"),
+    )
+    .expect("json");
+    assert_eq!(session["gateStatus"], "failed");
+    let _ = std::fs::remove_dir_all(repo);
+}

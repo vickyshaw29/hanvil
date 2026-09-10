@@ -518,7 +518,12 @@ async fn drive(
         });
     }
     let final_session = session::read_session(&layout.run_directory).unwrap_or(session);
-    let outro = format_outro(&report, &final_session, &cleanup, &spec.spec_path);
+    // The outro's next steps repeat the path as typed, as upstream does.
+    let typed_spec = args
+        .spec
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_SPEC_PATH));
+    let outro = format_outro(&report, &final_session, &cleanup, &typed_spec);
     layout.append_note("Run outro", &outro.join("\n"))?;
     log_phase(
         &format!("Run {}", if report.passed { "passed" } else { "failed" }),

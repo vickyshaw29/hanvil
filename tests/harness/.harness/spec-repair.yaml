@@ -1,0 +1,32 @@
+# A fake agent that fails once. On its first run it drains the run's signer over JSON-RPC and
+# forgets the required file; on its second it writes the file. The chain must come back to the
+# funded signer between the two, which is what snapshotPerAttempt is for.
+schemaVersion: 3
+name: repair-on-hanvil
+prd: .harness/prd.md
+generator:
+  provider: command
+  command: bash
+  args:
+    - -c
+    - |
+      if [ ! -f .attempt-marker ]; then
+        touch .attempt-marker
+        curl -s -X POST -H 'content-type: application/json' \
+          --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"anvil_setBalance\",\"params\":[\"$HARNESS_SIGNER_EVM_ADDRESS\",\"0x0\"]}" \
+          "$HANVIL_RPC_URL" > /dev/null
+      else
+        printf 'ok\n' > generated.txt
+      fi
+requiredFiles:
+  - generated.txt
+chainValidation:
+  enabled: true
+  network: local
+  assert:
+    - account: signer
+      minBalanceHbar: 10
+baseline:
+  commands:
+    - name: install
+      command: "true"
