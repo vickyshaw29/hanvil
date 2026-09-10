@@ -155,6 +155,16 @@ impl Provider {
         self
     }
 
+    /// Add environment on top of the config's own; the config's entries win on a clash.
+    pub(crate) fn with_env(mut self, extra: std::collections::BTreeMap<String, String>) -> Self {
+        let mut merged = extra;
+        if let Some(own) = self.config.env.take() {
+            merged.extend(own);
+        }
+        self.config.env = Some(merged);
+        self
+    }
+
     /// Run the agent once and wait for it.
     pub(crate) async fn run(&self, input: RunInput<'_>) -> Result<RunResult, Error> {
         if input.workspace.as_os_str().is_empty() {

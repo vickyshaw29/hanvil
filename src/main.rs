@@ -26,12 +26,14 @@ use clap::Parser;
 async fn main() -> anyhow::Result<ExitCode> {
     let started = Instant::now();
     let args = cli::Args::parse();
-    init_tracing(args.node.silent);
+    // A harness run prints its own stage lines; the node's per-transaction log would drown
+    // them. `RUST_LOG` still turns it on.
+    init_tracing(args.node.silent || args.command.is_some());
     match args.command {
         None => serve_node(&args.node, started)
             .await
             .map(|()| ExitCode::SUCCESS),
-        Some(command) => Ok(harness::dispatch(command).await),
+        Some(command) => Ok(harness::dispatch(command, args.node).await),
     }
 }
 

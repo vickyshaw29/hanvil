@@ -34,8 +34,41 @@ pub struct Args {
 /// Harness subcommands, named as in `hedera-harness`.
 #[derive(clap::Subcommand, Debug, Clone)]
 pub enum Command {
+    /// Drive a coding agent against a recipe on the in-process chain, attempt by attempt.
+    Run(RunArgs),
     /// Check the recipe and the host before a long run. Reports everything at once.
     Doctor(DoctorArgs),
+}
+
+/// `hanvil run [SPEC] [--max-attempts N] [--new | --continue BRANCH] [--workspace DIR]`.
+///
+/// The node boots on the recipe's `chainValidation.local` ports, or 7546/5551/50211. A node
+/// flag given explicitly wins; one left at its default defers to the recipe.
+#[derive(clap::Args, Debug, Clone)]
+pub struct RunArgs {
+    /// Recipe to run. Defaults to .harness/spec.yaml.
+    #[arg(value_name = "SPEC")]
+    pub spec: Option<PathBuf>,
+
+    /// Attempt budget per increment. Overrides HARNESS_MAX_ATTEMPTS and the recipe.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+    pub max_attempts: Option<u64>,
+
+    /// Start a fresh harness/run-* branch even when the current one matches the recipe.
+    #[arg(long, conflicts_with = "continue_branch")]
+    pub new: bool,
+
+    /// Check out this harness/run-* branch and resume its session.
+    #[arg(long = "continue", value_name = "BRANCH")]
+    pub continue_branch: Option<String>,
+
+    /// Project directory the agent edits in place. Defaults to the current directory.
+    #[arg(long, value_name = "DIR")]
+    pub workspace: Option<PathBuf>,
+
+    /// Do not vendor product skills from hedera-skills.
+    #[arg(long)]
+    pub no_skills: bool,
 }
 
 /// `hanvil doctor [SPEC] [--recipe-only] [--workspace DIR]`.

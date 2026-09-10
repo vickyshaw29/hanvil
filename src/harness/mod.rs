@@ -14,6 +14,7 @@ use crate::cli;
 pub(crate) mod agent;
 pub(crate) mod artifacts;
 pub(crate) mod assert;
+pub(crate) mod attempt;
 pub(crate) mod chain;
 pub(crate) mod command;
 pub(crate) mod doctor;
@@ -21,6 +22,8 @@ pub(crate) mod env;
 pub(crate) mod findings;
 pub(crate) mod git;
 pub(crate) mod prompt;
+pub(crate) mod run;
+pub(crate) mod session;
 pub(crate) mod spec;
 
 /// `promptTemplates.ts:13-21`.
@@ -41,9 +44,25 @@ pub(crate) const PROJECT_PROMPTS_DIR: &str = ".harness/prompts";
 pub(crate) const DEFAULT_SPEC_PATH: &str = ".harness/spec.yaml";
 
 /// Run a harness subcommand. Exit status follows `cli.ts`: 0 on success, 1 when a report did
-/// not pass.
-pub(crate) async fn dispatch(command: cli::Command) -> ExitCode {
+/// not pass or anything threw (`index.ts:22-26` prints `Error: <message>`).
+pub(crate) async fn dispatch(command: cli::Command, node: cli::NodeArgs) -> ExitCode {
     match command {
+        cli::Command::Run(args) => match run::run(args, node).await {
+            Ok(outcome) => {
+                for line in &outcome.outro {
+                    println!("{line}");
+                }
+                if outcome.report.passed {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                }
+            }
+            Err(error) => {
+                eprintln!("Error: {error}");
+                ExitCode::FAILURE
+            }
+        },
         cli::Command::Doctor(args) => {
             let options = doctor::Options {
                 spec_path: args
