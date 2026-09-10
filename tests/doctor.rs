@@ -108,12 +108,14 @@ fn recipe_only_reports_one_check_and_a_broken_recipe_fails() {
     let _ = std::fs::remove_dir_all(repo);
 }
 
+/// The recipe names `bash` as its generator so the agent check does not depend on `claude`
+/// being on the runner's PATH; the three failures are the ones the recipe was written to have.
 #[test]
 fn a_missing_prd_and_a_testnet_recipe_are_named() {
     let repo = fixture_repo("missing");
     std::fs::write(
         repo.join(".harness/spec.yaml"),
-        "schemaVersion: 3\nname: t\nprd: nowhere.md\nvalidator:\n  enabled: true\nchainValidation:\n  network: testnet\n  operator: {accountIdEnv: A, privateKeyEnv: B}\nbaseline:\n  commands:\n    - name: install\n      command: \"true\"\n",
+        "schemaVersion: 3\nname: t\nprd: nowhere.md\ngenerator:\n  provider: command\n  command: bash\nvalidator:\n  enabled: true\nchainValidation:\n  network: testnet\n  operator: {accountIdEnv: A, privateKeyEnv: B}\nbaseline:\n  commands:\n    - name: install\n      command: \"true\"\n",
     )
     .expect("write");
     let (ok, report) = doctor(&[], &repo);
