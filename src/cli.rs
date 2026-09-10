@@ -40,7 +40,7 @@ pub enum Command {
     Run(RunArgs),
     /// Check the recipe and the host before a long run. Reports everything at once.
     Doctor(DoctorArgs),
-    /// ASSERT, then the thin SMOKE gate when ASSERT is clean. No agent, no chain.
+    /// ASSERT, then the thin SMOKE gate when ASSERT is clean, with the in-process chain and a signer for the app. No agent.
     Validate(ValidateArgs),
     /// EVALUATE alone, against the workspace as it stands: boots the node, starts the app,
     /// grades it with the validator agent.

@@ -1,6 +1,7 @@
 //! `hanvil run`. `sessionRunner.ts`, `runCleanup.ts` and `runOutro.ts` of hedera-harness dev
 //! @ 587a2f3, with the node booted in this process before anything else happens.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -120,6 +121,7 @@ pub(crate) fn note_interrupted() {
 /// No agent, no chain, no branch.
 pub(crate) async fn validate(
     args: ValidateArgs,
+    node_args: NodeArgs,
 ) -> Result<crate::harness::findings::ValidationResult, Error> {
     let workspace = args
         .workspace
@@ -143,15 +145,19 @@ pub(crate) async fn validate(
     }
     let gate = crate::harness::smoke::load_gate_config(&playwright_path)?;
     println!("[hanvil] Running thin Playwright gate...");
-    let mut dev_server = crate::harness::devserver::start(
-        &workspace,
-        &gate.server,
-        "validate",
-        &std::collections::BTreeMap::new(),
-    )
-    .await?;
     let output_dir = std::env::temp_dir().join(format!("hanvil-validate-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&output_dir);
+    // Hanvil: the app gets the chain and the signer `run` would give it, or it cannot start.
+    // Nothing lands under `.harness/runs`; the signer file lives in the temp dir and goes with it.
+    let app = match spec.chain_validation {
+        Some(_) => {
+            Some(chain_for_app(&node_args, spec, &workspace, &output_dir.join("chain")).await?)
+        }
+        None => None,
+    };
+    let env = app.as_ref().map(|app| app.env.clone()).unwrap_or_default();
+    let mut dev_server =
+        crate::harness::devserver::start(&workspace, &gate.server, "validate", &env).await?;
     let (result, findings) = crate::harness::smoke::run_gate(
         &workspace,
         &playwright_path,
@@ -162,6 +168,9 @@ pub(crate) async fn validate(
     )
     .await;
     dev_server.stop().await;
+    if let Some(app) = app {
+        app.teardown(spec);
+    }
     let _ = std::fs::remove_dir_all(&output_dir);
     validation.findings.extend(findings);
     validation.passed = validation.findings.is_empty();
@@ -211,14 +220,6 @@ pub(crate) async fn validate_semantic(
         return Err(Error::TestnetRefused);
     }
 
-    let node = boot_node(&node_args, spec, &workspace).await?;
-    let local = LocalChain {
-        rpc_url: format!("http://{}", node.rpc.local_addr),
-        mirror_url: format!("http://{}", node.mirror.local_addr),
-        grpc_url: node.grpc.local_addr.to_string(),
-        chain_id: node.shared.read().chain_id(),
-    };
-
     // Completed-workspace policy: grade with the last slice's PRD/eval pair.
     let (prd_path, eval_path) = spec.slice(spec.prd_paths.len().saturating_sub(1));
     let context = vendor_context(
@@ -251,42 +252,16 @@ pub(crate) async fn validate_semantic(
         artifacts::Layout::reopen(&run_directory, &spec.jsonl_log_path, &spec.notes_log_path)?;
     let attempt = artifacts::last_attempt_number(&logs_directory) + 1;
 
-    let mut signer: Option<Signer> = None;
-    if let Some(config) = &spec.chain_validation {
-        let provisioned = {
-            let now = node.clock.now();
-            let mut guard = node.shared.write();
-            chain::provision(&mut guard, config, &run_directory, now)?
-        };
-        log_phase(
-            match (provisioned.reused, provisioned.topped_up_hbar) {
-                (true, Some(_)) => "Chain signer reused + topped up",
-                (true, None) => "Chain signer reused",
-                _ => "Chain signer provisioned",
-            },
-            Some(&match provisioned.topped_up_hbar {
-                Some(hbar) => format!(
-                    "{} (+{hbar} HBAR → {})",
-                    provisioned.signer.account_id, config.funding_hbar
-                ),
-                None => format!(
-                    "{} ({})",
-                    provisioned.signer.account_id, provisioned.signer.evm_address
-                ),
-            }),
-        );
-        signer = Some(provisioned.signer);
-    }
+    let app = chain_for_app(&node_args, spec, &workspace, &run_directory).await?;
+    let local = app.local.clone();
+    let signer = app.signer.clone();
     log_phase(
         &format!("Evaluation attempt {attempt} started"),
         Some(&workspace.display().to_string()),
     );
 
     let gate = crate::harness::smoke::load_gate_config(&playwright_path)?;
-    let mut env = local.env();
-    if let (Some(signer), Some(config)) = (&signer, &spec.chain_validation) {
-        env.extend(chain::deploy_env(signer, &config.expose_env_vars));
-    }
+    let env = app.env.clone();
     let dev_server =
         crate::harness::devserver::start(&workspace, &gate.server, "validate-semantic", &env)
             .await?;
@@ -336,8 +311,7 @@ pub(crate) async fn validate_semantic(
     }
     .await;
     dev_server.stop().await;
-    let _ = std::fs::remove_file(run_directory.join(chain::SIGNER_FILENAME));
-    node.shutdown();
+    app.teardown(spec);
     let evaluation = outcome?;
     let result_path = logs_directory.join(format!("evaluation-attempt-{attempt}.json"));
     artifacts::write_json_file(&result_path, &evaluation)?;
@@ -358,6 +332,107 @@ pub(crate) async fn validate_semantic(
         )),
     );
     Ok(evaluation)
+}
+
+/// The chain an app under `validate` or `validate-semantic` runs against: the in-process node,
+/// a signer, and the environment `run` gives a dev server. Neither command runs the recipe's
+/// deploy commands; they grade the workspace as it stands.
+struct AppChain {
+    node: Node,
+    local: LocalChain,
+    signer: Option<Signer>,
+    signer_dir: PathBuf,
+    env: BTreeMap<String, String>,
+}
+
+async fn chain_for_app(
+    node_args: &NodeArgs,
+    spec: &Spec,
+    workspace: &Path,
+    signer_dir: &Path,
+) -> Result<AppChain, Error> {
+    if spec
+        .chain_validation
+        .as_ref()
+        .is_some_and(|c| c.network == ChainNetwork::Testnet)
+    {
+        return Err(Error::TestnetRefused);
+    }
+    let node = boot_node(node_args, spec, workspace).await?;
+    let local = LocalChain {
+        rpc_url: format!("http://{}", node.rpc.local_addr),
+        mirror_url: format!("http://{}", node.mirror.local_addr),
+        grpc_url: node.grpc.local_addr.to_string(),
+        chain_id: node.shared.read().chain_id(),
+    };
+    let mut env = local.env();
+    let mut signer = None;
+    if let Some(config) = &spec.chain_validation {
+        std::fs::create_dir_all(signer_dir).map_err(|source| Error::Vendor {
+            path: signer_dir.to_path_buf(),
+            source,
+        })?;
+        let provisioned = {
+            let now = node.clock.now();
+            let mut guard = node.shared.write();
+            chain::provision(&mut guard, config, signer_dir, now)?
+        };
+        log_phase(
+            match (provisioned.reused, provisioned.topped_up_hbar) {
+                (true, Some(_)) => "Chain signer reused + topped up",
+                (true, None) => "Chain signer reused",
+                _ => "Chain signer provisioned",
+            },
+            Some(&match provisioned.topped_up_hbar {
+                Some(hbar) => format!(
+                    "{} (+{hbar} HBAR → {})",
+                    provisioned.signer.account_id, config.funding_hbar
+                ),
+                None => format!(
+                    "{} ({})",
+                    provisioned.signer.account_id, provisioned.signer.evm_address
+                ),
+            }),
+        );
+        env.extend(chain::deploy_env(
+            &provisioned.signer,
+            &config.expose_env_vars,
+        ));
+        signer = Some(provisioned.signer);
+    }
+    Ok(AppChain {
+        node,
+        local,
+        signer,
+        signer_dir: signer_dir.to_path_buf(),
+        env,
+    })
+}
+
+impl AppChain {
+    /// Sweep the signer back, drop its file, stop the node.
+    fn teardown(self, spec: &Spec) {
+        if let (Some(signer), Some(config)) = (&self.signer, &spec.chain_validation) {
+            let swept = {
+                let now = self.node.clock.now();
+                let mut guard = self.node.shared.write();
+                chain::sweep(&mut guard, signer, config, &self.signer_dir, now)
+            };
+            log_phase(
+                if swept.success {
+                    "Chain signer swept"
+                } else {
+                    "Chain signer not swept"
+                },
+                Some(&match swept.error {
+                    Some(error) => format!("{} — {error}", signer.account_id),
+                    None => signer.account_id.clone(),
+                }),
+            );
+        }
+        let _ = std::fs::remove_file(self.signer_dir.join(chain::SIGNER_FILENAME));
+        self.node.shutdown();
+    }
 }
 
 /// What `hanvil run` returns to the CLI.

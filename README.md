@@ -328,14 +328,17 @@ gains one sentence saying the chain was reset.
 ```
 hanvil run [SPEC] [--max-attempts N] [--new | --continue BRANCH] [--workspace DIR] [--no-skills]
 hanvil doctor [SPEC] [--recipe-only]
-hanvil validate [SPEC]              # ASSERT, then SMOKE when ASSERT is clean: no agent, no chain
+hanvil validate [SPEC]              # ASSERT, then SMOKE when ASSERT is clean; no agent
 hanvil validate-semantic [SPEC]     # EVALUATE only, against the workspace as it is
 hanvil init [DIR] [--repo URL] [--ref REF] [--template NAME] [--skip-install]
 ```
 
 The node flags apply to every subcommand. `run` binds 7546, 5551 and 50211 unless a flag or the
 recipe's `chainValidation.local` says otherwise, so `Client.forLocalNode()` in the generated app
-works untouched. Artifacts land under `.harness/runs/<timestamp>-<name>/` in the upstream layout
+works untouched. `validate` and `validate-semantic` boot the same chain and provision a signer
+for the app's dev server, and sweep it after; they do not run the recipe's deploy commands.
+`run --continue` on a session that already passed starts the next cycle — a fresh GENERATE with
+upstream's `continue` prompt — not a no-op. Artifacts land under `.harness/runs/<timestamp>-<name>/` in the upstream layout
 — `session.json`, `status.json`, `prompts/`, `logs/`, `reports/report.json` — plus
 `logs/chain-state-attempt-N.json`; the signer's private key reads `<redacted by hanvil>` in
 every prompt file, and `.harness/runs/harness.log.jsonl` records every event with its timestamp

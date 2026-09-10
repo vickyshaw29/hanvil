@@ -576,6 +576,71 @@ fn the_smoke_gate_walks_the_routes_and_names_the_forbidden_text() {
     let _ = std::fs::remove_dir_all(repo);
 }
 
+/// `hanvil validate` boots the chain and provisions a signer for the dev server, as `run` does;
+/// an app that refuses to start without `HARNESS_SIGNER_*` and `HANVIL_*` therefore starts.
+#[test]
+fn validate_gives_the_app_the_chain_and_the_signer() {
+    if !browser_available() {
+        eprintln!("skipped: the SMOKE gate needs npx and a Chromium or Chrome on this machine");
+        return;
+    }
+    let repo =
+        std::env::temp_dir().join(format!("hanvil-run-validate-chain-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&repo);
+    copy_dir(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/harness-smoke"),
+        &repo,
+    );
+    let spec_path = repo.join(".harness/spec.yaml");
+    let mut spec = std::fs::read_to_string(&spec_path).expect("spec");
+    spec.push_str("chainValidation:\n  enabled: true\n  network: local\n");
+    std::fs::write(&spec_path, spec).expect("write spec");
+    std::fs::write(
+        repo.join(".harness/validators/playwright-smoke.yaml"),
+        "server:\n  command: node server-env.js\n  url: http://127.0.0.1:47392\n  timeoutMs: 30000\ndefaults:\n  timeoutMs: 20000\n  hydrationTimeoutMs: 15000\nroutes:\n  - name: home\n    path: /\n",
+    )
+    .expect("write gate");
+    std::fs::write(
+        repo.join("server-env.js"),
+        "for (const name of [\"HANVIL_RPC_URL\", \"HANVIL_MIRROR_URL\", \"HARNESS_SIGNER_ACCOUNT_ID\", \"HARNESS_SIGNER_PRIVATE_KEY\"]) {\n  if (!process.env[name]) { console.error(`${name} is not set`); process.exit(1); }\n}\nprocess.env.PORT = \"47392\";\nrequire(\"./server.js\");\n",
+    )
+    .expect("write server");
+    std::fs::write(repo.join("generated.txt"), "ok\n").expect("write");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_hanvil"))
+        .args([
+            "validate",
+            "--port",
+            "0",
+            "--mirror-port",
+            "0",
+            "--grpc-port",
+            "0",
+        ])
+        .current_dir(&repo)
+        .output()
+        .expect("hanvil runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    for line in [
+        "[hanvil] Chain signer provisioned — 0.0.1032",
+        "[hanvil] SMOKE browser ready — ",
+        "[hanvil] Chain signer swept — 0.0.1032",
+        "Validation finished\npassed=true\nfindings=0\nplaywrightGate=true routes=1",
+    ] {
+        assert!(stdout.contains(line), "missing {line:?} in:\n{stdout}");
+    }
+    assert!(
+        !repo.join(".harness/runs").exists(),
+        "validate writes no run"
+    );
+    let _ = std::fs::remove_dir_all(repo);
+}
+
 #[test]
 fn validate_runs_assert_alone_and_reports_like_upstream() {
     let repo = fixture_repo("validate");

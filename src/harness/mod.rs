@@ -111,7 +111,7 @@ pub(crate) async fn dispatch(command: cli::Command, node: cli::NodeArgs) -> Exit
                 ExitCode::FAILURE
             }
         },
-        cli::Command::Validate(args) => match run::validate(args).await {
+        cli::Command::Validate(args) => match run::validate(args, node).await {
             Ok(validation) => {
                 // `cli.ts:109-127`.
                 let mut lines = vec![
