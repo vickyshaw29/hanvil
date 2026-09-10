@@ -1,6 +1,6 @@
-# The dogfood recipe: a backend on HCS, every stage on. The chain assertion asks for three
-# messages where the PRD asks for one welcome receipt, so attempt 1 fails on the chain alone and
-# attempt 2 is a repair — the loop, on purpose, and stated here.
+# The dogfood recipe: a backend on HCS, every stage on. The chain assertions are evaluated on
+# the in-process chain after `deploy` runs; the agent can read this file, so they document what
+# the run checks rather than trap it.
 schemaVersion: 3
 
 name: hcs-receipts-api
