@@ -1,0 +1,17 @@
+# A fake agent that never finishes: the Ctrl-C test interrupts it during GENERATE.
+schemaVersion: 3
+name: slow-on-hanvil
+generator:
+  provider: command
+  command: bash
+  args: ["-c", "sleep 5959"]
+prd: .harness/prd.md
+requiredFiles:
+  - generated.txt
+chainValidation:
+  enabled: true
+  network: local
+baseline:
+  commands:
+    - name: install
+      command: "true"

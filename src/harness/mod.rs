@@ -164,8 +164,8 @@ pub(crate) async fn dispatch(command: cli::Command, node: cli::NodeArgs) -> Exit
                     "[hanvil] interrupted — stopping the agent, the dev server and the browser"
                 );
                 let stopped = command::kill_all_groups().await;
-                run::note_interrupted();
                 println!("[hanvil] stopped {stopped} process group(s)");
+                run::cleanup_after_interrupt().await;
                 ExitCode::from(130)
             }
             Some(Ok(outcome)) => {

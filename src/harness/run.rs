@@ -106,14 +106,28 @@ pub(crate) struct Cleanup {
 /// The run directory of the run in progress, so an interrupt can say so in `status.json`.
 static CURRENT_RUN_DIR: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
-/// D13: called from the Ctrl-C handler after the run future was dropped.
-pub(crate) fn note_interrupted() {
+/// D13: called from the Ctrl-C handler after the run future was dropped and every process
+/// group is stopped. Marks the run interrupted, then cleans the workspace the way a finished run
+/// does — the signer's key file and the runtime directories must not outlive the run.
+pub(crate) async fn cleanup_after_interrupt() {
     let run_dir = CURRENT_RUN_DIR.lock().ok().and_then(|guard| guard.clone());
-    if let Some(run_dir) = run_dir {
-        let _ = artifacts::write_json_file(
-            &run_dir.join("status.json"),
-            &json!({ "updatedAt": now_iso8601(), "phase": "interrupted" }),
-        );
+    let Some(run_dir) = run_dir else {
+        return;
+    };
+    let _ = artifacts::write_json_file(
+        &run_dir.join("status.json"),
+        &json!({ "updatedAt": now_iso8601(), "phase": "interrupted" }),
+    );
+    let Some(workspace) = artifacts::read_layout_meta(&run_dir) else {
+        return;
+    };
+    match cleanup_runtime(&workspace).await {
+        Ok(cleanup) if cleanup.removed_paths.is_empty() => {}
+        Ok(cleanup) => log_phase(
+            "Run runtime cleaned",
+            Some(&cleanup.removed_paths.join(", ")),
+        ),
+        Err(error) => log_phase("Run runtime not cleaned", Some(&error.to_string())),
     }
 }
 

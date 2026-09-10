@@ -367,6 +367,96 @@ fn a_failed_attempt_reverts_the_chain_under_the_repair() {
     let _ = std::fs::remove_dir_all(repo);
 }
 
+/// D13: Ctrl-C during GENERATE stops the agent's process group, marks the run interrupted,
+/// exits 130, and leaves neither the signer's key file nor the runtime directories behind.
+#[test]
+fn ctrl_c_stops_the_agent_and_cleans_the_workspace() {
+    let repo = fixture_repo("ctrlc");
+    // Outside the workspace: an untracked file inside it would make `run` refuse the tree.
+    let stdout_path =
+        std::env::temp_dir().join(format!("hanvil-run-ctrlc-{}.stdout", std::process::id()));
+    let stdout_file = std::fs::File::create(&stdout_path).expect("stdout file");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hanvil"))
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .args([
+            "run",
+            ".harness/spec-slow.yaml",
+            "--no-skills",
+            "--port",
+            "0",
+            "--mirror-port",
+            "0",
+            "--grpc-port",
+            "0",
+        ])
+        .current_dir(&repo)
+        .stdout(stdout_file)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("hanvil starts");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let stdout = std::fs::read_to_string(&stdout_path).unwrap_or_default();
+        if stdout.contains("[hanvil] Stage 1/5 GENERATE") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "GENERATE never started:\n{stdout}"
+        );
+        assert!(
+            child.try_wait().expect("wait").is_none(),
+            "hanvil exited before GENERATE:\n{stdout}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let killed = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("kill runs");
+    assert!(killed.success());
+    let status = child.wait().expect("hanvil exits");
+    assert_eq!(status.code(), Some(130), "{status:?}");
+
+    let stdout = std::fs::read_to_string(&stdout_path).expect("stdout");
+    for line in [
+        "[hanvil] interrupted — stopping the agent, the dev server and the browser",
+        "[hanvil] stopped 1 process group(s)",
+        "[hanvil] Run runtime cleaned — ",
+    ] {
+        assert!(stdout.contains(line), "missing {line:?} in:\n{stdout}");
+    }
+    let run_dir = run_directory(&repo);
+    let status_json: Value = serde_json::from_str(
+        &std::fs::read_to_string(run_dir.join("status.json")).expect("status.json"),
+    )
+    .expect("json");
+    assert_eq!(status_json["phase"], "interrupted");
+    assert!(
+        !run_dir.join("chain-signer.json").exists(),
+        "the signer's key file outlived the run"
+    );
+    assert!(
+        !repo.join(".harness/runtime").exists(),
+        "runtime dir left behind"
+    );
+    // The fake agent was `bash -c "sleep 5959"` in its own process group.
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let survivors = Command::new("pgrep")
+        .args(["-f", "sleep 5959"])
+        .output()
+        .expect("pgrep runs");
+    assert!(
+        String::from_utf8_lossy(&survivors.stdout).trim().is_empty(),
+        "the agent survived Ctrl-C: {}",
+        String::from_utf8_lossy(&survivors.stdout)
+    );
+    let _ = std::fs::remove_file(stdout_path);
+    let _ = std::fs::remove_dir_all(repo);
+}
+
 #[test]
 fn continue_reloads_the_chain_the_failed_cycle_left() {
     let repo = fixture_repo("continue");
