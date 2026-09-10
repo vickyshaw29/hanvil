@@ -289,20 +289,25 @@ pub(crate) async fn run_loop(input: LoopInput<'_>) -> Result<RunReport, Error> {
         )?;
 
         // Snapshot before the agent runs, so a failed attempt can be undone under the repair.
-        let (snapshot_id, mark) = {
+        let (snapshot_id, mark, snapshot_micros) = {
             let mut guard = chain.shared.write();
             let mark = chain::Mark::of(&guard);
+            let started = Instant::now();
             let id = snapshot_per_attempt.then(|| guard.snapshot());
-            (id, mark)
+            (id, mark, micros_since(started))
         };
         if let Some(id) = snapshot_id {
             layout.append_log(&LogEvent::ChainSnapshotTaken {
                 attempt: attempts,
                 snapshot_id: chain::snapshot_id(id),
+                duration_micros: snapshot_micros,
             })?;
             log_phase(
                 "Chain snapshot taken",
-                Some(&format!("attempt {attempts} — {}", chain::snapshot_id(id))),
+                Some(&format!(
+                    "attempt {attempts} — {} — {snapshot_micros} µs",
+                    chain::snapshot_id(id)
+                )),
             );
         }
 
@@ -380,11 +385,14 @@ pub(crate) async fn run_loop(input: LoopInput<'_>) -> Result<RunReport, Error> {
         if attempts_this_cycle < max_attempts {
             let reverted = match snapshot_id {
                 Some(id) => {
+                    let started = Instant::now();
                     let success = chain.shared.write().revert(id);
+                    let duration_micros = micros_since(started);
                     layout.append_log(&LogEvent::ChainSnapshotReverted {
                         attempt: attempts,
                         snapshot_id: chain::snapshot_id(id),
                         success,
+                        duration_micros,
                     })?;
                     log_phase(
                         if success {
@@ -393,7 +401,7 @@ pub(crate) async fn run_loop(input: LoopInput<'_>) -> Result<RunReport, Error> {
                             "Chain revert refused"
                         },
                         Some(&format!(
-                            "attempt {} starts on the state attempt {attempts} started on",
+                            "attempt {} starts on the state attempt {attempts} started on — {duration_micros} µs",
                             attempts + 1
                         )),
                     );
@@ -984,6 +992,7 @@ fn record_attempt_result(
 /// Hanvil: dump the chain the attempt left, so `hanvil --state` replays it and `--continue`
 /// reloads it. Serialised under a read lock; written outside it.
 fn write_state_dump(layout: &Layout, chain: &ChainHandle, attempt: u64) -> Result<(), Error> {
+    let started = Instant::now();
     let json = chain.shared.read().to_json();
     let json = match json {
         Ok(json) => json,
@@ -995,6 +1004,7 @@ fn write_state_dump(layout: &Layout, chain: &ChainHandle, attempt: u64) -> Resul
     let path = layout
         .logs_directory
         .join(format!("chain-state-attempt-{attempt}.json"));
+    let bytes = json.len() as u64;
     if let Err(error) = std::fs::write(&path, json) {
         log_phase(
             "Chain state not written",
@@ -1002,15 +1012,28 @@ fn write_state_dump(layout: &Layout, chain: &ChainHandle, attempt: u64) -> Resul
         );
         return Ok(());
     }
+    let duration_micros = micros_since(started);
     layout.append_log(&LogEvent::ChainStateWritten {
         attempt,
         path: path.clone(),
+        bytes,
+        duration_micros,
     })?;
     session::update_session(&layout.run_directory, |session| {
         session.chain_state_path = Some(path);
     })?;
-    log_phase("Chain state written", Some(&format!("attempt {attempt}")));
+    log_phase(
+        "Chain state written",
+        Some(&format!(
+            "attempt {attempt} — {bytes} bytes — {duration_micros} µs"
+        )),
+    );
     Ok(())
+}
+
+/// Whole microseconds since `started`; saturates rather than truncating a u128.
+pub(crate) fn micros_since(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
 /// `attemptReporting.ts:145-173`.

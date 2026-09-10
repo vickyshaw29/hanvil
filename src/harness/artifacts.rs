@@ -318,6 +318,8 @@ pub(crate) enum LogEvent {
         topped_up_hbar: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         replaced_deleted: Option<bool>,
+        /// Hanvil: time spent inside the chain lock.
+        duration_micros: u64,
     },
     ChainSignerSwept {
         account_id: String,
@@ -328,16 +330,22 @@ pub(crate) enum LogEvent {
     ChainSnapshotTaken {
         attempt: u64,
         snapshot_id: String,
+        /// Hanvil: the `Chain` clone, measured inside the lock.
+        duration_micros: u64,
     },
     ChainSnapshotReverted {
         attempt: u64,
         snapshot_id: String,
         success: bool,
+        duration_micros: u64,
     },
     /// Hanvil: the attempt's chain was dumped for replay.
     ChainStateWritten {
         attempt: u64,
         path: PathBuf,
+        bytes: u64,
+        /// Serialise plus write.
+        duration_micros: u64,
     },
     /// Hanvil: `chainValidation.assert` was evaluated.
     ChainAssertionsFinished {
@@ -502,6 +510,7 @@ mod tests {
                 reused: false,
                 topped_up_hbar: None,
                 replaced_deleted: None,
+                duration_micros: 7,
             })
             .expect("log");
         let lines: Vec<Value> = std::fs::read_to_string(&jsonl)

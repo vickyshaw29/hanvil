@@ -600,10 +600,12 @@ async fn drive(
     let mut signer: Option<Signer> = None;
     let outcome = async {
         if let Some(config) = &spec.chain_validation {
-            let provisioned = {
+            let (provisioned, duration_micros) = {
                 let now = node.clock.now();
                 let mut guard = node.shared.write();
-                chain::provision(&mut guard, config, &layout.run_directory, now)?
+                let started = Instant::now();
+                let provisioned = chain::provision(&mut guard, config, &layout.run_directory, now)?;
+                (provisioned, attempt::micros_since(started))
             };
             layout.append_log(&LogEvent::ChainSignerProvisioned {
                 account_id: provisioned.signer.account_id.clone(),
@@ -612,6 +614,7 @@ async fn drive(
                 reused: provisioned.reused,
                 topped_up_hbar: provisioned.topped_up_hbar,
                 replaced_deleted: provisioned.replaced_deleted.then_some(true),
+                duration_micros,
             })?;
             log_phase(
                 if provisioned.reused {
@@ -620,7 +623,7 @@ async fn drive(
                     "Chain signer provisioned"
                 },
                 Some(&format!(
-                    "{} ({})",
+                    "{} ({}) — {duration_micros} µs",
                     provisioned.signer.account_id, provisioned.signer.evm_address
                 )),
             );

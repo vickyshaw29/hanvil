@@ -174,6 +174,18 @@ fn the_fixture_passes_in_one_attempt_with_the_signer_swept_and_the_chain_dumped(
     let provisioned = event(&events, "chain_signer_provisioned");
     assert_eq!(provisioned["network"], "local");
     assert_eq!(provisioned["reused"], false);
+    // The README quotes these; they must come out of the log, not be claimed.
+    for kind in [
+        "chain_signer_provisioned",
+        "chain_snapshot_taken",
+        "chain_state_written",
+    ] {
+        let micros = &event(&events, kind)["durationMicros"];
+        assert!(
+            micros.is_u64(),
+            "{kind} carries no durationMicros: {micros}"
+        );
+    }
     let account = provisioned["accountId"].as_str().expect("account id");
     assert!(account.starts_with("0.0.10"), "{account}");
     assert_eq!(event(&events, "chain_signer_swept")["success"], true);
@@ -303,6 +315,7 @@ fn a_failed_attempt_reverts_the_chain_under_the_repair() {
     assert_eq!(reverted["attempt"], 1);
     assert_eq!(reverted["snapshotId"], "0x0");
     assert_eq!(reverted["success"], true);
+    assert!(reverted["durationMicros"].is_u64(), "{reverted}");
     let taken: Vec<&Value> = events
         .iter()
         .filter(|e| e["type"] == "chain_snapshot_taken")
