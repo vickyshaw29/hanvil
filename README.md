@@ -204,11 +204,20 @@ Not emulated. Each of these is a deliberate hole, not an oversight:
   logs the way `ethers` and `viem` do without a socket: `eth_newFilter` then `eth_getFilterChanges`,
   which Hanvil serves. `eth_newPendingTransactionFilter` is refused — one block is mined per
   transaction, so nothing is ever pending.
-- Forking testnet or mainnet state. Hanvil starts from its own genesis every time and makes no
-  outbound calls; `--state` replays a file Hanvil itself wrote.
-- `hanvil run` with `network: testnet`. Preflight and `doctor` refuse it with `Use network:
-  local, or run this recipe with hedera-harness.`; the two PRs below are the testnet path.
+- Forking testnet or mainnet state. The node starts from its own genesis every time and opens no
+  outbound socket; `--state` replays a file Hanvil itself wrote.
+- `hanvil validate` and `validate-semantic` with `network: testnet`. Both boot the in-process
+  chain for the app, and on testnet there is nothing to boot; `hanvil run` is the testnet path.
   `mainnet` is refused by the recipe loader with upstream's own `Mainnet is not allowed.`
+- On `network: testnet`, `assert`, `phases` and `advanceTimeSeconds` are refused at load, not
+  skipped: they read the chain in this process and testnet is not it. `snapshotPerAttempt` is
+  false there for the same reason. `hedera-harness` has none of these on testnet either, so a
+  recipe written for it is unaffected.
+- Public testnet itself, in the sense of a verified claim. The testnet path is exercised end to
+  end in `tests/run.rs` against a second Hanvil standing in for the network — real protobuf, real
+  ECDSA over `keccak256(bodyBytes)`, real gRPC, real receipts, a real `CryptoDelete` the account
+  signs for itself — but node addressing, the real fee schedule, mirror lag and TLS have not been
+  run against `0.testnet.hedera.com`. Point `chainValidation.node` at it and they will be.
 - `hanvil run` with `agent: cursor`. The preset and its `.cursor/mcp.json` delivery are ported
   line for line and have not been run against a Cursor install.
 - SMOKE's HTTP status on a Chromium older than 109. It is read from
@@ -465,6 +474,11 @@ route. Where the 9 min 32 s went, from the `harness.log.jsonl` timestamps and `r
 
 The attempt-2 dump is 43,643 bytes; `hanvil --state <it> --port 0` prints `Started in 0 ms` and
 its mirror answers `GET /api/v1/topics/0.0.1033/messages` with the six messages the app wrote.
+
+`hanvil run` covers `hedera-harness`'s surface: the same five commands, the same five stages, the
+same recipe schema, the same artifacts and console strings — and `network: testnet`, so there is
+no second tool to install. On testnet it does what upstream does and no more; everything below is
+what it does on `network: local`, where the chain is in this process.
 
 Against the TypeScript harness, on the same recipe:
 

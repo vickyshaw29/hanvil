@@ -349,7 +349,8 @@ answers), KeyList/threshold signatures, fee schedules and exchange-rate fidelity
 contract deploys, state forking from testnet/mainnet, mirror gRPC (5600), relay WebSocket (8546),
 block-node, persistence across restarts unless `--state` is given.
 
-Harness (§16): `chainValidation.network: testnet` (refused with a message naming `hedera-harness`),
+Harness (§16): `hanvil validate` / `validate-semantic` on `network: testnet` (both boot the
+in-process chain for the app; `hanvil run` is the testnet path),
 Windows, the Cursor `.cursor/mcp.json` MCP mode against a real Cursor install, HTTP status of a
 route when Chromium lacks `PerformanceNavigationTiming.responseStatus`.
 
