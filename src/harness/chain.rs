@@ -14,6 +14,7 @@ use sha2::{Digest as _, Sha384};
 use crate::evm::units::Tinybar;
 use crate::harness::artifacts::now_iso8601;
 use crate::harness::findings::{Category, Finding};
+use crate::harness::ledger::Ledger;
 use crate::harness::spec::{AccountRef, ChainAssertion, ChainValidation, TopicRef};
 use crate::state::hapi::{Body, Digest384, Status, Transaction, TxId};
 use crate::state::{Chain, EntityId, FIRST_USER_ID, HAPI_FEE, Timestamp};
@@ -383,6 +384,8 @@ pub(crate) struct Mark {
     pub(crate) records: usize,
     /// `blocks().len()`.
     pub(crate) blocks: usize,
+    /// `rejections().count()`.
+    pub(crate) rejections: usize,
 }
 
 impl Mark {
@@ -391,6 +394,7 @@ impl Mark {
         Self {
             records: chain.hapi_records().count(),
             blocks: chain.blocks().len(),
+            rejections: chain.rejections().count(),
         }
     }
 }
@@ -428,13 +432,30 @@ fn resolve_account<'a>(
     }
 }
 
+/// The transaction kind an assertion is about, for [`Ledger::attribution`]. Empty means any:
+/// an account assertion can fail because of a create, a delete or a transfer.
+fn attribution_kind(assertion: &ChainAssertion) -> &str {
+    match assertion {
+        ChainAssertion::Topic { .. } => "CONSENSUSSUBMITMESSAGE",
+        ChainAssertion::Contract { .. } => "ETHEREUMTRANSACTION",
+        ChainAssertion::Transactions { kind, .. } => kind,
+        ChainAssertion::Account { .. } => "",
+    }
+}
+
 /// Evaluate `chainValidation.assert` against the chain as it stands. One finding per failed
 /// entry, category `chain`, id `chain:<index>:<kind>`.
+///
+/// A failed assertion states the symptom — the effect that is missing. `ledger` supplies the
+/// cause when the chain knows one: a transaction the node refused, or one that reached consensus
+/// and failed. That half is invisible to `hedera-harness`, which reads a mirror node, and a
+/// mirror node carries nothing that was refused before consensus.
 pub(crate) fn run_assertions(
     chain: &Chain,
     assertions: &[ChainAssertion],
     signer: Option<&Signer>,
     since: &Mark,
+    ledger: &Ledger,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
     for (index, assertion) in assertions.iter().enumerate() {
@@ -473,11 +494,15 @@ pub(crate) fn run_assertions(
                 ChainAssertion::Topic { .. } => "topic",
                 ChainAssertion::Transactions { .. } => "transactions",
             };
-            findings.push(Finding::new(
+            let finding = Finding::new(
                 format!("chain:{index}:{kind}"),
                 Category::Chain,
                 format!("Chain assertion {index} ({kind}) failed: {reason}"),
-            ));
+            );
+            findings.push(match ledger.attribution(attribution_kind(assertion)) {
+                Some(cause) => finding.with_details(cause),
+                None => finding,
+            });
         }
     }
     findings
@@ -737,7 +762,13 @@ mod tests {
         let yaml = format!(
             "  assert:\n    - account: signer\n      minBalanceHbar: 9\n    - account: signer\n      minBalanceHbar: 11\n    - account: 0.0.999999\n      exists: true\n    - account: 0.0.999999\n      exists: false\n    - account: signer\n      deleted: true\n    - contract: \"{address}\"\n    - contract: \"{address}\"\n      deployed: false\n    - topic: created\n      messagesAtLeast: 1\n    - topic: 0.0.5\n      messagesAtLeast: 0\n    - transactions:\n        type: CRYPTOCREATEACCOUNT\n        atLeast: 1\n    - transactions:\n        type: CRYPTOCREATEACCOUNT\n        payer: signer\n    - transactions:\n        type: ETHEREUMTRANSACTION\n        atLeast: 2\n"
         );
-        let findings = run_assertions(&chain, &config(&yaml).assertions, Some(&signer), &mark);
+        let findings = run_assertions(
+            &chain,
+            &config(&yaml).assertions,
+            Some(&signer),
+            &mark,
+            &Ledger::since(&chain, &mark),
+        );
         let ids: Vec<&str> = findings.iter().map(|f| f.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -800,6 +831,7 @@ mod tests {
                 .assertions,
             Some(&signer),
             &later,
+            &Ledger::since(&chain, &later),
         );
         assert_eq!(none_since.len(), 1);
         assert_eq!(snapshot_id(26), "0x1a");

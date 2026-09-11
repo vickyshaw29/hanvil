@@ -32,6 +32,7 @@ use crate::harness::findings::{
     truncate_details,
 };
 use crate::harness::git;
+use crate::harness::ledger::Ledger;
 use crate::harness::mcp;
 use crate::harness::prompt::{self, ChainContext, Slice, VendoredContext, VendoredSkill};
 use crate::harness::session::{self, log_phase};
@@ -652,7 +653,7 @@ async fn run_validation_stages(
             validation.passed = false;
             return Ok(validation);
         }
-        let assertion_findings = {
+        let (ledger, assertion_findings) = {
             let mut guard = chain.shared.write();
             if config.advance_time_seconds > 0 {
                 guard.increase_time(config.advance_time_seconds);
@@ -661,8 +662,11 @@ async fn run_validation_stages(
                     Some(&format!("{} s", config.advance_time_seconds)),
                 );
             }
-            chain::run_assertions(&guard, &config.assertions, signer, mark)
+            let ledger = Ledger::since(&guard, mark);
+            let findings = chain::run_assertions(&guard, &config.assertions, signer, mark, &ledger);
+            (ledger, findings)
         };
+        report_ledger(layout, &ledger, attempt)?;
         layout.append_log(&LogEvent::ChainAssertionsFinished {
             attempt,
             passed: assertion_findings.is_empty(),
@@ -986,6 +990,45 @@ fn record_attempt_result(
             "FAILED"
         }
     );
+    Ok(())
+}
+
+/// Hanvil: the chain ledger for the attempt — every transaction it caused, in consensus order,
+/// including the ones the node refused before consensus and which therefore left no record.
+/// Printed, and written to `logs/chain-ledger-attempt-N.json` beside the state dump.
+fn report_ledger(layout: &Layout, ledger: &Ledger, attempt: u64) -> Result<(), Error> {
+    if ledger.is_empty() {
+        log_phase(
+            "Chain ledger",
+            Some(&format!(
+                "attempt {attempt} — the attempt sent no transactions"
+            )),
+        );
+        return Ok(());
+    }
+    log_phase(
+        "Chain ledger",
+        Some(&format!("attempt {attempt} — {}", ledger.summary())),
+    );
+    for line in ledger.table().lines() {
+        println!("  {line}");
+    }
+    let path = layout
+        .logs_directory
+        .join(format!("chain-ledger-attempt-{attempt}.json"));
+    // A failed write is reported and does not stop the attempt, as with the state dump: the
+    // ledger is evidence about the run, not part of it.
+    match serde_json::to_string_pretty(ledger) {
+        Ok(json) => {
+            if let Err(error) = std::fs::write(&path, format!("{json}\n")) {
+                log_phase(
+                    "Chain ledger not written",
+                    Some(&format!("{}: {error}", path.display())),
+                );
+            }
+        }
+        Err(error) => log_phase("Chain ledger not written", Some(&error.to_string())),
+    }
     Ok(())
 }
 

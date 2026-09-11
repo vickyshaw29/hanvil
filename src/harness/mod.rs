@@ -20,6 +20,7 @@ pub(crate) mod evaluate;
 pub(crate) mod findings;
 pub(crate) mod git;
 pub(crate) mod init;
+mod ledger;
 pub(crate) mod mcp;
 pub(crate) mod prompt;
 pub(crate) mod run;
