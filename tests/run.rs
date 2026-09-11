@@ -771,8 +771,12 @@ fn a_phase_moves_the_clock_a_week_before_its_commands_run() {
     ] {
         assert!(stdout.contains(line), "missing {line:?} in:\n{stdout}");
     }
-    // The gap between the deploy and the sweep is the week, visible in the ledger itself.
-    assert!(stdout.contains("+604800.0s"), "{stdout}");
+    // The gap between the deploy and the sweep is the week, visible in the ledger itself. The
+    // tenth of a second after it is however long the sweep took, so it is not asserted.
+    assert!(
+        stdout.contains("  +604800."),
+        "the ledger shows the week: {stdout}"
+    );
 
     let ledger: Value = serde_json::from_str(
         &std::fs::read_to_string(run_directory(&repo).join("logs/chain-ledger-attempt-1.json"))
@@ -781,10 +785,10 @@ fn a_phase_moves_the_clock_a_week_before_its_commands_run() {
     .expect("json");
     let entries = ledger["entries"].as_array().expect("entries");
     assert_eq!(entries.len(), 2);
-    // The week, plus the milliseconds the sweep itself took.
+    // The week the phase moved, plus however long the sweep itself took on this machine.
     let gap = entries[1]["atMillis"].as_u64().expect("offset");
     assert!(
-        (604_800_000..604_900_000).contains(&gap),
+        (604_800_000..608_400_000).contains(&gap),
         "a week between the deploy and the sweep, got {gap} ms"
     );
     let _ = std::fs::remove_dir_all(repo);

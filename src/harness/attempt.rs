@@ -690,22 +690,16 @@ async fn run_validation_stages(
         }
         // The flat block, then every phase. Assertion indices run on across all of them so a
         // finding id never moves when a phase is added, and the ledger is rebuilt before each
-        // set: a `rejections` assertion in one phase must not see the next phase's refusals.
+        // set: a `rejections` assertion in one phase must not see the next phase's refusals,
+        // which have not happened yet.
+        advance_chain_time(chain, config.advance_time_seconds);
         let mut index_offset = 0;
-        let mut ledger;
-        let mut assertion_findings;
-        let mut phase_name: Option<String> = None;
-        let mut phases = config.phases.iter();
-        let mut advance = config.advance_time_seconds;
         let mut assertions = &config.assertions;
-
-        loop {
-            (ledger, assertion_findings) = {
-                let mut guard = chain.shared.write();
-                if advance > 0 {
-                    guard.increase_time(advance);
-                    log_phase("Chain time advanced", Some(&format!("{advance} s")));
-                }
+        let mut phase_label: Option<String> = None;
+        let mut phases = config.phases.iter().enumerate();
+        let ledger = loop {
+            let (ledger, findings) = {
+                let guard = chain.shared.read();
                 let ledger = Ledger::since(&guard, mark);
                 let findings =
                     chain::run_assertions(&guard, assertions, signer, mark, &ledger, index_offset);
@@ -714,69 +708,60 @@ async fn run_validation_stages(
             report_ledger(layout, &ledger, attempt, true)?;
             layout.append_log(&LogEvent::ChainAssertionsFinished {
                 attempt,
-                passed: assertion_findings.is_empty(),
-                finding_count: assertion_findings.len(),
+                passed: findings.is_empty(),
+                finding_count: findings.len(),
             })?;
             if !assertions.is_empty() {
-                let of_phase = phase_name
-                    .as_ref()
+                let of_phase = phase_label
+                    .as_deref()
                     .map(|name| format!(" — phase {name}"))
                     .unwrap_or_default();
                 log_phase(
                     "Chain assertions",
                     Some(&format!(
                         "{} of {} passed{of_phase}",
-                        assertions.len() - assertion_findings.len(),
+                        assertions.len() - findings.len(),
                         assertions.len()
                     )),
                 );
             }
             index_offset += assertions.len();
-            if !assertion_findings.is_empty() {
-                break;
+            if !findings.is_empty() {
+                validation.chain_ledger = Some(ledger);
+                log_stage("SMOKE", Some("skipped — chain assertions failed"));
+                validation.findings.extend(findings);
+                validation.passed = false;
+                return Ok(validation);
             }
-            let Some(phase) = phases.next() else {
-                break;
+
+            let Some((number, phase)) = phases.next() else {
+                break ledger;
             };
-            phase_name = Some(
-                phase
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| format!("{index_offset}")),
-            );
-            log_phase(
-                "Chain phase",
-                Some(phase_name.as_deref().unwrap_or_default()),
-            );
-            advance = phase.advance_time_seconds;
-            assertions = &phase.assertions;
-            // The clock has to move before the commands: increase_time shifts the offset and
-            // block.timestamp only follows on the next mined block.
-            if advance > 0 {
-                chain.shared.write().increase_time(advance);
-                log_phase("Chain time advanced", Some(&format!("{advance} s")));
-                advance = 0;
-            }
-            let phase_deploy =
+            let label = phase
+                .name
+                .clone()
+                .unwrap_or_else(|| (number + 1).to_string());
+            log_phase("Chain phase", Some(&label));
+            // The clock moves before the commands run: `increase_time` shifts the offset and
+            // `block.timestamp` only follows on the next mined block, so a command that must see
+            // the later time has to come after the advance.
+            advance_chain_time(chain, phase.advance_time_seconds);
+            let deploy_findings =
                 run_deploy_commands(&phase.deploy, spec, workspace, signer, &chain.local).await?;
-            if !phase_deploy.is_empty() {
+            if !deploy_findings.is_empty() {
                 let ledger = Ledger::since(&chain.shared.read(), mark);
                 report_ledger(layout, &ledger, attempt, true)?;
                 validation.chain_ledger = Some(ledger);
                 log_stage("SMOKE", Some("skipped — chain deploy failed"));
-                validation.findings.extend(phase_deploy);
+                validation.findings.extend(deploy_findings);
                 validation.passed = false;
                 return Ok(validation);
             }
-        }
+            assertions = &phase.assertions;
+            phase_label = Some(label);
+        };
 
         validation.chain_ledger = Some(ledger);
-        if !assertion_findings.is_empty() {
-            log_stage("SMOKE", Some("skipped — chain assertions failed"));
-            validation.findings.extend(assertion_findings);
-            validation.passed = false;
-            return Ok(validation);
-        }
     }
 
     let Some(playwright_path) = spec.validators.playwright_path.clone() else {
@@ -976,6 +961,15 @@ async fn run_chain_deploy(
         return Ok(Vec::new());
     };
     run_deploy_commands(&config.deploy, spec, workspace, signer, local).await
+}
+
+/// `evm_increaseTime` under the lock, with the console line. A no-op at zero.
+fn advance_chain_time(chain: &ChainHandle, seconds: u64) {
+    if seconds == 0 {
+        return;
+    }
+    chain.shared.write().increase_time(seconds);
+    log_phase("Chain time advanced", Some(&format!("{seconds} s")));
 }
 
 /// The deploy commands of the flat block or of one phase, with the same environment either way.
