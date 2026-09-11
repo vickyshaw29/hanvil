@@ -1,6 +1,6 @@
 //! `eth_*`, `net_*`, `web3_*` methods. Behaviour follows hiero-json-rpc-relay docs/rpc-api.md.
 
-use alloy_primitives::keccak256;
+use alloy_primitives::{Address, keccak256};
 use revm::context_interface::result::ExecutionResult;
 use serde_json::{Value, json};
 
@@ -11,7 +11,9 @@ use super::types::{
     receipt_json, to_block_is_pinned, tx_json, weibar, weibar_u64,
 };
 use crate::evm;
-use crate::state::{BLOCK_GAS_LIMIT, Chain, FilterChanges, Timestamp, UnsignedTx};
+use crate::state::{
+    BLOCK_GAS_LIMIT, BodyKind, Chain, FilterChanges, Rejection, Timestamp, UnsignedTx,
+};
 
 /// Methods the relay lists but answers with -32601. Kept identical so tooling that probes
 /// capabilities sees the same surface it would on a real relay.
@@ -218,7 +220,11 @@ pub fn call(
         }
         "eth_sendRawTransaction" => {
             let raw = parse_bytes(p(0), "transaction")?;
-            Ok(json!(hash(&chain.send_raw(raw, now)?)))
+            let sender = crate::evm::decode_signed(&raw).ok().map(|tx| tx.from);
+            match chain.send_raw(raw, now) {
+                Ok(mined) => Ok(json!(hash(&mined))),
+                Err(error) => Err(refused(chain, sender, error, now)),
+            }
         }
         "eth_sendTransaction" => {
             let request = parse_call(p(0))?;
@@ -235,10 +241,39 @@ pub fn call(
                 value: request.value,
                 input: request.input,
             };
-            Ok(json!(hash(&chain.send_unsigned(tx, now)?)))
+            match chain.send_unsigned(tx, now) {
+                Ok(mined) => Ok(json!(hash(&mined))),
+                Err(error) => Err(refused(chain, Some(from), error, now)),
+            }
         }
         other => Err(RpcError::method_not_found(other)),
     }
+}
+
+/// Keep a transaction the node would not mine, then answer the caller as the relay does.
+///
+/// A refusal here leaves no block, no receipt and no mirror row — the caller's error object is
+/// the whole of it, exactly as a HAPI precheck code is. `wire::submit` keeps those; this keeps
+/// the JSON-RPC half, so a viem or ethers client that swallows a send error is still visible on
+/// the chain that refused it.
+fn refused(
+    chain: &mut Chain,
+    sender: Option<Address>,
+    error: crate::state::Error,
+    now: Timestamp,
+) -> RpcError {
+    let rendered = RpcError::from(error);
+    chain.reject(Rejection {
+        at: now,
+        kind: Some(BodyKind::EthereumTransaction),
+        payer: sender
+            .and_then(|address| chain.account_by_evm(&address))
+            .map(|a| a.id),
+        status: None,
+        from: sender,
+        message: rendered.message.clone(),
+    });
+    rendered
 }
 
 /// Hanvil keeps only the head state. A historical block tag is refused rather than silently

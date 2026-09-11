@@ -14,8 +14,8 @@ use super::proto;
 use crate::evm::units::Tinybar;
 use crate::keys::sig::{self, SignaturePair};
 use crate::state::{
-    AccountRef, Body, Chain, Digest384, EntityId, HAPI_FEE, Key, NODE, Record, Status, Timestamp,
-    Transaction, TxId,
+    AccountRef, Body, BodyKind, Chain, Digest384, EntityId, HAPI_FEE, Key, NODE, Record, Rejection,
+    Status, Timestamp, Transaction, TxId,
 };
 
 /// How far ahead of the node's clock a `validStart` may sit. The SDK stamps it from the client's
@@ -27,7 +27,47 @@ const MAX_VALID_DURATION_SECS: u64 = 180;
 
 /// Decode, precheck, verify signatures and apply. `Err` is the precheck code the node returns
 /// instead of `OK`; `Ok` means the transaction reached consensus and the record is stored.
+///
+/// A rejection is kept on the chain before it is returned. Hedera leaves nothing behind when a
+/// transaction fails precheck — no record, no receipt, no mirror row — so a caller that drops
+/// the error destroys the only evidence it happened. Hanvil is the node and keeps it.
 pub fn submit(
+    chain: &mut Chain,
+    envelope: &proto::Transaction,
+    now: Timestamp,
+    verify_signatures: bool,
+) -> Result<Record, Status> {
+    let outcome = precheck_and_apply(chain, envelope, now, verify_signatures);
+    if let Err(status) = outcome {
+        let (kind, payer) = identify(envelope);
+        chain.reject(Rejection {
+            at: now,
+            kind,
+            payer,
+            status: Some(status),
+            from: None,
+            message: String::new(),
+        });
+    }
+    outcome
+}
+
+/// What the rejected submission was, read back from the envelope on the failure path only. Any
+/// field the decode does not reach stays `None`: the rejection is evidence, and a guess is not.
+fn identify(envelope: &proto::Transaction) -> (Option<BodyKind>, Option<EntityId>) {
+    let Ok(signed) = proto::SignedTransaction::decode(envelope.signed_transaction_bytes.as_slice())
+    else {
+        return (None, None);
+    };
+    let Ok(body) = proto::TransactionBody::decode(signed.body_bytes.as_slice()) else {
+        return (None, None);
+    };
+    let kind = decode_body(body.data.as_ref()).ok().map(|body| body.kind());
+    let payer = transaction_id(body.transaction_id.as_ref()).map(|id| id.payer);
+    (kind, payer)
+}
+
+fn precheck_and_apply(
     chain: &mut Chain,
     envelope: &proto::Transaction,
     now: Timestamp,
@@ -591,6 +631,47 @@ mod tests {
                 .status,
             Status::Success
         );
+    }
+
+    /// The point of keeping rejections: a precheck failure leaves no record, no receipt and no
+    /// mirror row, so without this the only trace is an error the caller may swallow.
+    #[test]
+    fn a_refused_transaction_leaves_no_record_but_is_kept_as_a_rejection() {
+        let mut chain = chain();
+        let body = body(transfer(EntityId(1003), 500));
+        let before = chain.hapi_records().count();
+
+        assert_eq!(
+            submit(&mut chain, &unsigned(&body), NOW, true).err(),
+            Some(Status::InvalidSignature)
+        );
+
+        assert_eq!(
+            chain.hapi_records().count(),
+            before,
+            "a precheck failure must not leave a record"
+        );
+        let rejections: Vec<_> = chain.rejections().collect();
+        assert_eq!(rejections.len(), 1);
+        assert_eq!(rejections[0].status, Some(Status::InvalidSignature));
+        assert_eq!(rejections[0].kind_name(), "CRYPTOTRANSFER");
+        assert_eq!(rejections[0].payer, Some(PAYER));
+        assert_eq!(rejections[0].reason(), "INVALID_SIGNATURE");
+    }
+
+    /// A body that never decodes still leaves a rejection; the fields it could not reach stay
+    /// `None` rather than being guessed.
+    #[test]
+    fn a_rejection_names_only_what_the_envelope_gave_up() {
+        let mut chain = chain();
+        assert_eq!(
+            submit(&mut chain, &proto::Transaction::default(), NOW, true).err(),
+            Some(Status::InvalidTransaction)
+        );
+        let rejection = chain.rejections().next().expect("kept");
+        assert_eq!(rejection.kind, None);
+        assert_eq!(rejection.payer, None);
+        assert_eq!(rejection.kind_name(), "UNKNOWN");
     }
 
     #[test]

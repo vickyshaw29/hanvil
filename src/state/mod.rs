@@ -24,7 +24,8 @@ pub use blocks::{
     TxRecord, UnsignedTx,
 };
 pub use hapi::{
-    AccountRef, Body, Digest384, Record, Status, Topic, TopicMessage, Transaction, Transfer, TxId,
+    AccountRef, Body, BodyKind, Digest384, Record, Rejection, Status, Topic, TopicMessage,
+    Transaction, Transfer, TxId,
 };
 pub use time::{Clock, Timestamp};
 
@@ -174,6 +175,10 @@ pub struct Chain {
     impersonated: HashSet<Address>,
     topics: BTreeMap<EntityId, Topic>,
     hapi_records: Vec<Record>,
+    /// Submissions refused before consensus, oldest first. `#[serde(default)]` so a state file
+    /// written before this field existed still loads.
+    #[serde(default)]
+    rejections: Vec<Rejection>,
     /// Index into `hapi_records` by id. Not serialised — serde_json refuses a struct as a map
     /// key — and rebuilt by [`Chain::from_json`].
     #[serde(skip)]
@@ -204,6 +209,7 @@ impl Chain {
             impersonated: HashSet::new(),
             topics: BTreeMap::new(),
             hapi_records: Vec::new(),
+            rejections: Vec::new(),
             hapi_by_id: HashMap::new(),
             snapshots: BTreeMap::new(),
             next_snapshot: 0,
@@ -947,6 +953,21 @@ impl Chain {
     /// Every HAPI record, oldest first.
     pub fn hapi_records(&self) -> impl Iterator<Item = &Record> {
         self.hapi_records.iter()
+    }
+
+    /// Every submission the node refused before consensus, oldest first.
+    ///
+    /// These have no record, no receipt and no mirror row — on Hedera and here alike. Keeping
+    /// them is what lets `hanvil run` tell an agent that its transaction was refused rather
+    /// than merely that the effect it wanted is missing.
+    pub fn rejections(&self) -> impl Iterator<Item = &Rejection> {
+        self.rejections.iter()
+    }
+
+    /// Keep a refused submission. Called on every path that answers a caller with a precheck
+    /// code instead of a receipt.
+    pub fn reject(&mut self, rejection: Rejection) {
+        self.rejections.push(rejection);
     }
 
     /// Whether this transaction id already reached consensus (`DUPLICATE_TRANSACTION`).

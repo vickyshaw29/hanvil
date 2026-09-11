@@ -475,6 +475,47 @@ impl Record {
     }
 }
 
+/// A submission the node refused before consensus.
+///
+/// A precheck failure leaves no record on Hedera — `wire::submit` returns the code in
+/// `TransactionResponse.nodeTransactionPrecheckCode` and the transaction never reaches the
+/// mirror node. An application that swallows the error therefore leaves no evidence anywhere
+/// that it tried. Hanvil is the node, so it keeps them: this is the half of the truth a
+/// mirror-node client cannot read.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Rejection {
+    /// When the node refused it.
+    pub at: Timestamp,
+    /// Body kind, when the body decoded far enough to name it.
+    pub kind: Option<BodyKind>,
+    /// Payer from the transaction id, when it decoded.
+    pub payer: Option<EntityId>,
+    /// The precheck code the caller was given. `None` for a JSON-RPC refusal, which has no
+    /// `ResponseCodeEnum` — the relay answers those with an error object, and `message` is it.
+    pub status: Option<Status>,
+    /// The EVM sender, for a JSON-RPC submission refused before it was mined.
+    pub from: Option<Address>,
+    /// What the caller is told, verbatim: the JSON-RPC `message`, or empty for HAPI, where the
+    /// status name is the whole of it.
+    pub message: String,
+}
+
+impl Rejection {
+    /// Body kind as the mirror would name it, or `UNKNOWN` when the body did not decode.
+    pub fn kind_name(&self) -> &'static str {
+        self.kind.map_or("UNKNOWN", BodyKind::name)
+    }
+
+    /// What the caller was told: the `ResponseCodeEnum` name for HAPI, the error text for
+    /// JSON-RPC.
+    pub fn reason(&self) -> String {
+        match self.status {
+            Some(status) => status.name().to_string(),
+            None => self.message.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
