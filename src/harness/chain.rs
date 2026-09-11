@@ -457,9 +457,11 @@ pub(crate) fn run_assertions(
     signer: Option<&Signer>,
     since: &Mark,
     ledger: &Ledger,
+    index_offset: usize,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
-    for (index, assertion) in assertions.iter().enumerate() {
+    for (position, assertion) in assertions.iter().enumerate() {
+        let index = position + index_offset;
         let failure = match assertion {
             ChainAssertion::Account {
                 account,
@@ -868,6 +870,7 @@ mod tests {
             Some(&signer),
             &mark,
             &Ledger::since(&chain, &mark),
+            0,
         );
         let ids: Vec<&str> = findings.iter().map(|f| f.id.as_str()).collect();
         assert_eq!(
@@ -932,6 +935,7 @@ mod tests {
             Some(&signer),
             &later,
             &Ledger::since(&chain, &later),
+            0,
         );
         assert_eq!(none_since.len(), 1);
         assert_eq!(snapshot_id(26), "0x1a");
@@ -1007,6 +1011,7 @@ mod tests {
             None,
             &mark,
             &Ledger::since(&chain, &mark),
+            0,
         );
 
         // 0 passes; 1 wanted three; 2 wanted an event the contract never emits.
@@ -1029,6 +1034,7 @@ mod tests {
             None,
             &empty_mark,
             &Ledger::since(&empty, &empty_mark),
+            0,
         );
         assert_eq!(none.len(), 3);
         assert!(
@@ -1079,7 +1085,7 @@ mod tests {
             "  assert:\n    - rejections: {}\n    - rejections:\n        type: CONSENSUSSUBMITMESSAGE\n        payer: signer\n    - rejections:\n        type: CRYPTODELETE\n    - rejections:\n        atMost: 2\n",
         )
         .assertions;
-        let findings = run_assertions(&chain, &assertions, Some(&signer), &mark, &ledger);
+        let findings = run_assertions(&chain, &assertions, Some(&signer), &mark, &ledger, 0);
 
         // 0 fails (two refusals, none allowed); 1 fails (the signer's one); 2 and 3 pass.
         assert_eq!(findings.len(), 2);
@@ -1117,6 +1123,7 @@ mod tests {
                 Some(&signer),
                 &clean_mark,
                 &Ledger::since(&clean, &clean_mark),
+                0,
             )
             .is_empty()
         );
@@ -1140,11 +1147,14 @@ mod tests {
         let ledger = Ledger::since(&chain, &mark);
 
         let any = config("  assert:\n    - rejections: {}\n").assertions;
-        assert_eq!(run_assertions(&chain, &any, None, &mark, &ledger).len(), 1);
+        assert_eq!(
+            run_assertions(&chain, &any, None, &mark, &ledger, 0).len(),
+            1
+        );
 
         let typed =
             config("  assert:\n    - rejections:\n        type: CRYPTOTRANSFER\n").assertions;
-        assert!(run_assertions(&chain, &typed, None, &mark, &ledger).is_empty());
+        assert!(run_assertions(&chain, &typed, None, &mark, &ledger, 0).is_empty());
     }
 
     fn signer() -> Signer {

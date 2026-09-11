@@ -688,36 +688,89 @@ async fn run_validation_stages(
             validation.passed = false;
             return Ok(validation);
         }
-        let (ledger, assertion_findings) = {
-            let mut guard = chain.shared.write();
-            if config.advance_time_seconds > 0 {
-                guard.increase_time(config.advance_time_seconds);
+        // The flat block, then every phase. Assertion indices run on across all of them so a
+        // finding id never moves when a phase is added, and the ledger is rebuilt before each
+        // set: a `rejections` assertion in one phase must not see the next phase's refusals.
+        let mut index_offset = 0;
+        let mut ledger;
+        let mut assertion_findings;
+        let mut phase_name: Option<String> = None;
+        let mut phases = config.phases.iter();
+        let mut advance = config.advance_time_seconds;
+        let mut assertions = &config.assertions;
+
+        loop {
+            (ledger, assertion_findings) = {
+                let mut guard = chain.shared.write();
+                if advance > 0 {
+                    guard.increase_time(advance);
+                    log_phase("Chain time advanced", Some(&format!("{advance} s")));
+                }
+                let ledger = Ledger::since(&guard, mark);
+                let findings =
+                    chain::run_assertions(&guard, assertions, signer, mark, &ledger, index_offset);
+                (ledger, findings)
+            };
+            report_ledger(layout, &ledger, attempt, true)?;
+            layout.append_log(&LogEvent::ChainAssertionsFinished {
+                attempt,
+                passed: assertion_findings.is_empty(),
+                finding_count: assertion_findings.len(),
+            })?;
+            if !assertions.is_empty() {
+                let of_phase = phase_name
+                    .as_ref()
+                    .map(|name| format!(" — phase {name}"))
+                    .unwrap_or_default();
                 log_phase(
-                    "Chain time advanced",
-                    Some(&format!("{} s", config.advance_time_seconds)),
+                    "Chain assertions",
+                    Some(&format!(
+                        "{} of {} passed{of_phase}",
+                        assertions.len() - assertion_findings.len(),
+                        assertions.len()
+                    )),
                 );
             }
-            let ledger = Ledger::since(&guard, mark);
-            let findings = chain::run_assertions(&guard, &config.assertions, signer, mark, &ledger);
-            (ledger, findings)
-        };
-        report_ledger(layout, &ledger, attempt, true)?;
-        validation.chain_ledger = Some(ledger);
-        layout.append_log(&LogEvent::ChainAssertionsFinished {
-            attempt,
-            passed: assertion_findings.is_empty(),
-            finding_count: assertion_findings.len(),
-        })?;
-        if !config.assertions.is_empty() {
-            log_phase(
-                "Chain assertions",
-                Some(&format!(
-                    "{} of {} passed",
-                    config.assertions.len() - assertion_findings.len(),
-                    config.assertions.len()
-                )),
+            index_offset += assertions.len();
+            if !assertion_findings.is_empty() {
+                break;
+            }
+            let Some(phase) = phases.next() else {
+                break;
+            };
+            phase_name = Some(
+                phase
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("{index_offset}")),
             );
+            log_phase(
+                "Chain phase",
+                Some(phase_name.as_deref().unwrap_or_default()),
+            );
+            advance = phase.advance_time_seconds;
+            assertions = &phase.assertions;
+            // The clock has to move before the commands: increase_time shifts the offset and
+            // block.timestamp only follows on the next mined block.
+            if advance > 0 {
+                chain.shared.write().increase_time(advance);
+                log_phase("Chain time advanced", Some(&format!("{advance} s")));
+                advance = 0;
+            }
+            let phase_deploy =
+                run_deploy_commands(&phase.deploy, spec, workspace, signer, &chain.local).await?;
+            if !phase_deploy.is_empty() {
+                let ledger = Ledger::since(&chain.shared.read(), mark);
+                report_ledger(layout, &ledger, attempt, true)?;
+                validation.chain_ledger = Some(ledger);
+                log_stage("SMOKE", Some("skipped — chain deploy failed"));
+                validation.findings.extend(phase_deploy);
+                validation.passed = false;
+                return Ok(validation);
+            }
         }
+
+        validation.chain_ledger = Some(ledger);
         if !assertion_findings.is_empty() {
             log_stage("SMOKE", Some("skipped — chain assertions failed"));
             validation.findings.extend(assertion_findings);
@@ -922,13 +975,27 @@ async fn run_chain_deploy(
     let Some(config) = &spec.chain_validation else {
         return Ok(Vec::new());
     };
+    run_deploy_commands(&config.deploy, spec, workspace, signer, local).await
+}
+
+/// The deploy commands of the flat block or of one phase, with the same environment either way.
+async fn run_deploy_commands(
+    commands: &[crate::harness::spec::CommandSpec],
+    spec: &Spec,
+    workspace: &Path,
+    signer: Option<&Signer>,
+    local: &LocalChain,
+) -> Result<Vec<Finding>, Error> {
+    let Some(config) = &spec.chain_validation else {
+        return Ok(Vec::new());
+    };
     let Some(signer) = signer else {
         return Ok(Vec::new());
     };
     let mut env = local.env();
     env.extend(chain::deploy_env(signer, &config.expose_env_vars));
     let mut findings = Vec::new();
-    for command in &config.deploy {
+    for command in commands {
         let name = command
             .name
             .clone()

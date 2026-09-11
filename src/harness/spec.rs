@@ -472,6 +472,23 @@ pub(crate) enum ChainAssertion {
     },
 }
 
+/// One `chainValidation.phases[]` entry: move the clock, run commands, then assert.
+///
+/// The clock moves first because `Chain::increase_time` only shifts the offset — `block.timestamp`
+/// changes when the next block is mined, so a command that must see the later time has to run
+/// after the advance, not before it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ChainPhase {
+    /// Named in the console line and in any finding the phase produces.
+    pub(crate) name: Option<String>,
+    /// `evm_increaseTime` before the commands.
+    pub(crate) advance_time_seconds: u64,
+    /// Commands to run once the clock has moved.
+    pub(crate) deploy: Vec<CommandSpec>,
+    /// Evaluated after the commands.
+    pub(crate) assertions: Vec<ChainAssertion>,
+}
+
 /// `chainValidation:` block after defaults. Absent, or `enabled: false`, means CHAIN is off.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ChainValidation {
@@ -499,6 +516,9 @@ pub(crate) struct ChainValidation {
     pub(crate) advance_time_seconds: u64,
     /// Hanvil: deterministic checks on the chain.
     pub(crate) assertions: Vec<ChainAssertion>,
+    /// Hanvil: later phases, each moving the clock before it acts. Empty for a recipe that does
+    /// not use them, which is every recipe written for `hedera-harness`.
+    pub(crate) phases: Vec<ChainPhase>,
 }
 
 /// A loaded recipe. Paths are absolute.
@@ -1149,32 +1169,7 @@ fn read_chain_validation(parsed: &Map<String, Value>) -> Result<Option<ChainVali
     }
     let expose = as_object(record.get("expose")).unwrap_or(&empty);
 
-    let deploy = match as_object(record.get("deploy")) {
-        None => Vec::new(),
-        Some(deploy_record) => {
-            let Some(items) = deploy_record.get("commands").and_then(Value::as_array) else {
-                return Err(invalid(
-                    "Expected array \"chainValidation.deploy.commands\" in template spec.",
-                ));
-            };
-            items
-                .iter()
-                .enumerate()
-                .map(|(index, item)| {
-                    let Some(cmd) = as_object(Some(item)) else {
-                        return Err(invalid(format!(
-                            "Expected object at chainValidation.deploy.commands[{index}]."
-                        )));
-                    };
-                    Ok(CommandSpec {
-                        name: Some(read_string(cmd, "name")?),
-                        command: read_string(cmd, "command")?,
-                        timeout_ms: read_optional_number(cmd, "timeoutMs").map(|n| n as u64),
-                    })
-                })
-                .collect::<Result<Vec<_>, Error>>()?
-        }
-    };
+    let deploy = read_deploy_commands(record, "chainValidation")?;
 
     let funding_hbar = read_optional_number(record, "fundingHbar").unwrap_or(10.0);
     if !funding_hbar.is_finite() || funding_hbar <= 0.0 {
@@ -1228,6 +1223,7 @@ fn read_chain_validation(parsed: &Map<String, Value>) -> Result<Option<ChainVali
         snapshot_per_attempt: record.get("snapshotPerAttempt") != Some(&Value::Bool(false)),
         advance_time_seconds: read_advance_time(record)?,
         assertions: read_chain_assertions(record)?,
+        phases: read_chain_phases(record)?,
     }))
 }
 
@@ -1246,23 +1242,104 @@ fn read_advance_time(record: &Map<String, Value>) -> Result<u64, Error> {
 
 /// Hanvil: `chainValidation.assert[]`.
 fn read_chain_assertions(record: &Map<String, Value>) -> Result<Vec<ChainAssertion>, Error> {
-    let Some(raw) = record.get("assert") else {
+    match record.get("assert") {
+        None => Ok(Vec::new()),
+        Some(raw) => read_chain_assertions_at(raw, "chainValidation"),
+    }
+}
+
+/// The same list under a phase, so an error names `chainValidation.phases[1].assert[0]` rather
+/// than a path the recipe does not have.
+fn read_chain_assertions_at(raw: &Value, owner: &str) -> Result<Vec<ChainAssertion>, Error> {
+    let Some(items) = raw.as_array() else {
+        return Err(invalid(format!(
+            "Expected array \"{owner}.assert\" in template spec."
+        )));
+    };
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| read_chain_assertion(&format!("{owner}.assert[{index}]"), item))
+        .collect()
+}
+
+/// `deploy.commands` of `chainValidation` or of one `phases[]` entry. `at` is the path of the
+/// owning block, so the error names the right one.
+fn read_deploy_commands(record: &Map<String, Value>, at: &str) -> Result<Vec<CommandSpec>, Error> {
+    let Some(deploy_record) = as_object(record.get("deploy")) else {
+        return Ok(Vec::new());
+    };
+    let Some(items) = deploy_record.get("commands").and_then(Value::as_array) else {
+        return Err(invalid(format!(
+            "Expected array \"{at}.deploy.commands\" in template spec."
+        )));
+    };
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let Some(cmd) = as_object(Some(item)) else {
+                return Err(invalid(format!(
+                    "Expected object at {at}.deploy.commands[{index}]."
+                )));
+            };
+            Ok(CommandSpec {
+                name: Some(read_string(cmd, "name")?),
+                command: read_string(cmd, "command")?,
+                timeout_ms: read_optional_number(cmd, "timeoutMs").map(|n| n as u64),
+            })
+        })
+        .collect()
+}
+
+/// `chainValidation.phases[]`. Hanvil's own: `hedera-harness` has no way to move the clock, so
+/// there is nothing upstream for this to match.
+fn read_chain_phases(record: &Map<String, Value>) -> Result<Vec<ChainPhase>, Error> {
+    let Some(raw) = record.get("phases") else {
         return Ok(Vec::new());
     };
     let Some(items) = raw.as_array() else {
         return Err(invalid(
-            "Expected array \"chainValidation.assert\" in template spec.",
+            "Expected array \"chainValidation.phases\" in template spec.",
         ));
     };
     items
         .iter()
         .enumerate()
-        .map(|(index, item)| read_chain_assertion(index, item))
+        .map(|(index, item)| {
+            let at = format!("chainValidation.phases[{index}]");
+            let Some(phase) = as_object(Some(item)) else {
+                return Err(invalid(format!("Expected object at {at}.")));
+            };
+            let advance_time_seconds = match phase.get("advanceTimeSeconds") {
+                None => 0,
+                Some(raw) => match raw.as_f64() {
+                    Some(n) if n.fract() == 0.0 && n >= 0.0 => n as u64,
+                    _ => {
+                        return Err(invalid(format!(
+                            "Expected non-negative integer \"{at}.advanceTimeSeconds\"."
+                        )));
+                    }
+                },
+            };
+            let assertions = match phase.get("assert") {
+                None => Vec::new(),
+                Some(raw) => read_chain_assertions_at(raw, &at)?,
+            };
+            Ok(ChainPhase {
+                name: phase
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                advance_time_seconds,
+                deploy: read_deploy_commands(phase, &at)?,
+                assertions,
+            })
+        })
         .collect()
 }
 
-fn read_chain_assertion(index: usize, item: &Value) -> Result<ChainAssertion, Error> {
-    let at = format!("chainValidation.assert[{index}]");
+fn read_chain_assertion(at: &str, item: &Value) -> Result<ChainAssertion, Error> {
     let Some(entry) = as_object(Some(item)) else {
         return Err(invalid(format!("Expected object at {at}.")));
     };
@@ -1277,15 +1354,15 @@ fn read_chain_assertion(index: usize, item: &Value) -> Result<ChainAssertion, Er
     };
     match *kind {
         "account" => {
-            let account = read_account_ref(entry, "account", &at)?;
+            let account = read_account_ref(entry, "account", at)?;
             let min_balance_hbar = read_optional_number(entry, "minBalanceHbar");
             if min_balance_hbar.is_some_and(|n| !n.is_finite() || n < 0.0) {
                 return Err(invalid(format!(
                     "Expected non-negative number \"{at}.minBalanceHbar\"."
                 )));
             }
-            let exists = read_optional_bool(entry, "exists", &at)?;
-            let deleted = read_optional_bool(entry, "deleted", &at)?;
+            let exists = read_optional_bool(entry, "exists", at)?;
+            let deleted = read_optional_bool(entry, "deleted", at)?;
             if min_balance_hbar.is_none() && exists.is_none() && deleted.is_none() {
                 return Err(invalid(format!(
                     "{at}.account needs minBalanceHbar, exists or deleted."
@@ -1334,7 +1411,7 @@ fn read_chain_assertion(index: usize, item: &Value) -> Result<ChainAssertion, Er
             };
             Ok(ChainAssertion::Contract {
                 contract,
-                deployed: read_optional_bool(entry, "deployed", &at)?.unwrap_or(true),
+                deployed: read_optional_bool(entry, "deployed", at)?.unwrap_or(true),
                 event,
                 at_least,
             })
@@ -1373,7 +1450,7 @@ fn read_chain_assertion(index: usize, item: &Value) -> Result<ChainAssertion, Er
                 )));
             }
             let payer = if transactions.contains_key("payer") {
-                Some(read_account_ref(transactions, "payer", &at)?)
+                Some(read_account_ref(transactions, "payer", at)?)
             } else {
                 None
             };
@@ -1410,7 +1487,7 @@ fn read_chain_assertion(index: usize, item: &Value) -> Result<ChainAssertion, Er
                 None
             };
             let payer = if rejections.contains_key("payer") {
-                Some(read_account_ref(rejections, "payer", &at)?)
+                Some(read_account_ref(rejections, "payer", at)?)
             } else {
                 None
             };
@@ -2108,6 +2185,83 @@ mod tests {
             )),
             "Expected array \"chainValidation.assert\" in template spec."
         );
+    }
+
+    /// Phases are Hanvil's own, and invisible to upstream's loader: a recipe using them still
+    /// loads on `hedera-harness`, which ignores unknown keys under `chainValidation`.
+    #[test]
+    fn chain_phases_parse_with_their_own_error_paths() {
+        let chain = spec_of(&format!(
+            "{MINIMAL}chainValidation:\n  network: local\n  assert:\n    - topic: created\n      messagesAtLeast: 1\n  phases:\n    - name: after-a-week\n      advanceTimeSeconds: 604800\n      deploy:\n        commands:\n          - name: claim\n            command: node claim.js\n            timeoutMs: 5000\n      assert:\n        - rejections: {{}}\n    - {{}}\n"
+        ))
+        .chain_validation
+        .expect("chain");
+
+        assert_eq!(chain.assertions.len(), 1, "the flat block is unchanged");
+        assert_eq!(chain.phases.len(), 2);
+        let first = &chain.phases[0];
+        assert_eq!(first.name.as_deref(), Some("after-a-week"));
+        assert_eq!(first.advance_time_seconds, 604_800);
+        assert_eq!(first.deploy.len(), 1);
+        assert_eq!(first.deploy[0].name.as_deref(), Some("claim"));
+        assert_eq!(first.deploy[0].timeout_ms, Some(5_000));
+        assert_eq!(
+            first.assertions,
+            vec![ChainAssertion::Rejections {
+                kind: None,
+                payer: None,
+                at_most: 0
+            }]
+        );
+        // An empty phase is legal and does nothing; a recipe grows into one.
+        assert_eq!(chain.phases[1].advance_time_seconds, 0);
+        assert!(chain.phases[1].deploy.is_empty());
+        assert!(chain.phases[1].assertions.is_empty());
+
+        // A recipe with no phases has none, rather than one empty one.
+        assert!(
+            spec_of(&format!("{MINIMAL}chainValidation:\n  network: local\n"))
+                .chain_validation
+                .expect("chain")
+                .phases
+                .is_empty()
+        );
+
+        // Errors name the phase, not the flat block.
+        for (body, expected) in [
+            (
+                "  phases: 4\n",
+                "Expected array \"chainValidation.phases\" in template spec.",
+            ),
+            (
+                "  phases:\n    - 4\n",
+                "Expected object at chainValidation.phases[0].",
+            ),
+            (
+                "  phases:\n    - advanceTimeSeconds: -1\n",
+                "Expected non-negative integer \"chainValidation.phases[0].advanceTimeSeconds\".",
+            ),
+            (
+                "  phases:\n    - deploy: {commands: x}\n",
+                "Expected array \"chainValidation.phases[0].deploy.commands\" in template spec.",
+            ),
+            (
+                "  phases:\n    - assert: 4\n",
+                "Expected array \"chainValidation.phases[0].assert\" in template spec.",
+            ),
+            (
+                "  phases:\n    - assert:\n        - {account: bob, exists: true}\n",
+                "chainValidation.phases[0].assert[0].account must be \"signer\", an id like 0.0.N, or a 0x address.",
+            ),
+        ] {
+            assert_eq!(
+                error_of(&format!(
+                    "{MINIMAL}chainValidation:\n  network: local\n{body}"
+                )),
+                expected,
+                "for {body:?}"
+            );
+        }
     }
 
     #[test]
