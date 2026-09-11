@@ -519,6 +519,7 @@ pub(crate) fn build_repair_prompt(
     context: Option<&VendoredContext>,
     chain_reset: bool,
     ledger: Option<&Ledger>,
+    repeated: Option<&str>,
 ) -> Result<String, Error> {
     let mut preamble_vars = Vars::new();
     preamble_vars.insert("chainReset", Var::Flag(chain_reset));
@@ -574,7 +575,11 @@ pub(crate) fn build_repair_prompt(
     vars.insert("hasChainLedger", Var::Flag(ledger.is_some()));
     vars.insert(
         "chainLedger",
-        text(ledger.map(chain_ledger_section).unwrap_or_default()),
+        text(
+            ledger
+                .map(|ledger| chain_ledger_section(ledger, repeated))
+                .unwrap_or_default(),
+        ),
     );
 
     let body = match scope {
@@ -634,7 +639,11 @@ pub(crate) fn build_validator_prompt(
     vars.insert("hasChainLedger", Var::Flag(ledger.is_some()));
     vars.insert(
         "chainLedger",
-        text(ledger.map(chain_ledger_section).unwrap_or_default()),
+        text(
+            ledger
+                .map(|ledger| chain_ledger_section(ledger, None))
+                .unwrap_or_default(),
+        ),
     );
     if let Some(signer) = signer {
         vars.insert("signerAccountId", text(&signer.account_id));
@@ -649,7 +658,7 @@ pub(crate) fn build_validator_prompt(
 /// Hanvil: what the last attempt actually put on the chain, as evidence rather than as a
 /// summary. The refused rows are the ones no mirror node has, and they are the reason a
 /// repair usually needs no guessing.
-fn chain_ledger_section(ledger: &Ledger) -> String {
+fn chain_ledger_section(ledger: &Ledger, repeated: Option<&str>) -> String {
     let mut section = format!(
         "Every transaction your last attempt sent, in consensus order ({}):\n\n```\n{}\n```",
         ledger.summary(),
@@ -657,8 +666,13 @@ fn chain_ledger_section(ledger: &Ledger) -> String {
     );
     if ledger.rejected().count() > 0 {
         section.push_str(
-            "\n\nRows marked REJECTED were refused by the node before consensus. They have no              record, no receipt and no mirror-node entry — the error returned to your client was              the only trace. Fix the cause named in the result column.",
+            "\n\nRows marked REJECTED were refused by the node before consensus. They have no record, no receipt and no mirror-node entry — the error returned to your client was the only trace. Fix the cause named in the result column.",
         );
+    }
+    if let Some(repeated) = repeated {
+        section.push_str(&format!(
+            "\n\nThe attempt before this one was refused the same way ({repeated}). Whatever you changed last time did not reach the cause. Change how the transaction is built, not what the page shows."
+        ));
     }
     section
 }
@@ -1077,8 +1091,8 @@ mod tests {
             Finding::new("eval:x", Category::Eval, "critical [E1] (/): not loading"),
             Finding::new("validator-config", Category::EvalInfra, "ignored"),
         ];
-        let prompt =
-            build_repair_prompt(&spec, &findings, 2, Some(&context), true, None).expect("prompt");
+        let prompt = build_repair_prompt(&spec, &findings, 2, Some(&context), true, None, None)
+            .expect("prompt");
         assert!(prompt.starts_with("You are repairing an in-place extension of an existing application.\nPreserve unrelated working features. Prefer the smallest fix that clears the findings.\nThe local chain was reset"), "{prompt}");
         assert!(prompt.contains("Repair scope: **runtime**"), "{prompt}");
         assert!(prompt.contains("- `.harness/runtime/context/eval.json` — only the failed assertion ids if listed below"), "{prompt}");
@@ -1094,8 +1108,9 @@ mod tests {
             "{prompt}"
         );
 
-        let eval_only = build_repair_prompt(&spec, &findings[1..2], 3, Some(&context), false, None)
-            .expect("prompt");
+        let eval_only =
+            build_repair_prompt(&spec, &findings[1..2], 3, Some(&context), false, None, None)
+                .expect("prompt");
         assert!(
             eval_only.contains("Repair scope: **eval-scoped**"),
             "{eval_only}"
@@ -1110,6 +1125,7 @@ mod tests {
             2,
             None,
             false,
+            None,
             None,
         )
         .expect("prompt");
@@ -1161,8 +1177,16 @@ mod tests {
             )
             .with_details("1 CONSENSUSSUBMITMESSAGE submission(s) were refused before consensus"),
         ];
-        let prompt =
-            build_repair_prompt(&spec, &findings, 2, None, false, Some(&ledger)).expect("prompt");
+        let prompt = build_repair_prompt(
+            &spec,
+            &findings,
+            2,
+            None,
+            false,
+            Some(&ledger),
+            Some("1× CONSENSUSSUBMITMESSAGE — INVALID_SIGNATURE"),
+        )
+        .expect("prompt");
 
         assert!(
             prompt.contains("## Chain Ledger (ground truth, from the node itself)"),
@@ -1176,14 +1200,28 @@ mod tests {
             prompt.contains("no mirror-node entry"),
             "the agent is told why it cannot look this up: {prompt}"
         );
+        assert!(
+            prompt.contains(
+                "The attempt before this one was refused the same way (1× CONSENSUSSUBMITMESSAGE — INVALID_SIGNATURE)"
+            ),
+            "a repair that changed nothing is said so: {prompt}"
+        );
         // The finding keeps the cause as its own detail, so the two agree.
         assert!(
             prompt.contains("  1 CONSENSUSSUBMITMESSAGE submission(s) were refused"),
             "{prompt}"
         );
 
-        let empty = build_repair_prompt(&spec, &findings, 2, None, false, Some(&Ledger::default()))
-            .expect("prompt");
+        let empty = build_repair_prompt(
+            &spec,
+            &findings,
+            2,
+            None,
+            false,
+            Some(&Ledger::default()),
+            None,
+        )
+        .expect("prompt");
         assert!(!empty.contains("## Chain Ledger"), "{empty}");
         let _ = std::fs::remove_dir_all(dir);
     }
