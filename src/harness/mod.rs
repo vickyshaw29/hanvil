@@ -23,6 +23,7 @@ pub(crate) mod init;
 mod ledger;
 pub(crate) mod mcp;
 pub(crate) mod prompt;
+mod remote;
 pub(crate) mod run;
 pub(crate) mod session;
 pub(crate) mod skills;

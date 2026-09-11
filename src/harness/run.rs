@@ -15,6 +15,7 @@ use crate::harness::chain::{self, LocalChain, Signer};
 use crate::harness::findings::Finding;
 use crate::harness::git;
 use crate::harness::prompt::{Slice, VendoredContext, VendoredSkill};
+use crate::harness::remote;
 use crate::harness::session::{self, Mode, PrepareInput, Prepared, Session, log_phase};
 use crate::harness::skills;
 use crate::harness::spec::{self, ChainNetwork, Loaded, Spec};
@@ -73,11 +74,15 @@ pub(crate) enum Error {
         #[source]
         source: std::io::Error,
     },
-    /// `hanvil run` only drives the chain in this process.
+    /// `hanvil validate` and `validate-semantic` boot the in-process chain for the app; on
+    /// testnet there is nothing to boot and nothing to point the app at.
     #[error(
-        "chainValidation.network is \"testnet\"; hanvil run drives the in-process chain only. Use network: local, or run this recipe with hedera-harness."
+        "chainValidation.network is \"testnet\"; hanvil validate drives the in-process chain only. Use hanvil run, which supports testnet, or network: local."
     )]
     TestnetRefused,
+    /// Talking to a network Hanvil does not own.
+    #[error(transparent)]
+    Remote(#[from] crate::harness::remote::Error),
     /// `sessionRunner.ts:366-375`.
     #[error(
         "Run completion safety check failed: branch changed unexpectedly.\nexpected={expected}\nactual={actual}"
@@ -496,13 +501,6 @@ pub(crate) async fn run(args: RunArgs, node_args: NodeArgs) -> Result<Outcome, E
         );
     }
     let spec = &loaded.spec;
-    if spec
-        .chain_validation
-        .as_ref()
-        .is_some_and(|c| c.network == ChainNetwork::Testnet)
-    {
-        return Err(Error::TestnetRefused);
-    }
     // CLI flag > environment > recipe.
     let max_attempts = args
         .max_attempts
@@ -544,6 +542,33 @@ async fn boot_node(node_args: &NodeArgs, spec: &Spec, workspace: &Path) -> Resul
     let chain = node::load_or_genesis(&args, clock.as_ref())?;
     let _ = workspace;
     Ok(Node::boot(&args, chain, clock).await?)
+}
+
+/// The network this recipe names, when it is not ours. `None` means the in-process chain, which
+/// needs no client and no credentials.
+fn remote_for(
+    config: &crate::harness::spec::ChainValidation,
+) -> Result<Option<remote::Remote>, Error> {
+    if config.network != ChainNetwork::Testnet {
+        return Ok(None);
+    }
+    let operator = remote::Operator::from_env(
+        &config.operator_account_id_env,
+        &config.operator_private_key_env,
+    )?;
+    let endpoint = match &config.node {
+        Some(node) => remote::Endpoint {
+            address: node.address.clone(),
+            node: crate::harness::chain::parse_entity_id(&node.account)
+                .ok_or_else(|| remote::Error::Operator(format!("node.account {}", node.account)))?,
+        },
+        None => remote::Endpoint::testnet(),
+    };
+    Ok(Some(remote::Remote {
+        network: config.network.name().to_string(),
+        endpoint,
+        operator,
+    }))
 }
 
 /// `sessionRunner.ts:62-404`.
@@ -692,13 +717,21 @@ async fn drive(
     let mut signer: Option<Signer> = None;
     let outcome = async {
         if let Some(config) = &spec.chain_validation {
-            let (provisioned, duration_micros) = {
-                let now = node.clock.now();
-                let mut guard = node.shared.write();
-                let started = Instant::now();
-                let provisioned = chain::provision(&mut guard, config, &layout.run_directory, now)?;
-                (provisioned, attempt::micros_since(started))
+            let now = node.clock.now();
+            let started = Instant::now();
+            let provisioned = match remote_for(config)? {
+                // Somebody else's network: build, sign and submit over gRPC.
+                Some(remote) => {
+                    remote::provision(&remote, config.funding_hbar, &layout.run_directory, now)
+                        .await?
+                }
+                // Ours: a method call on the chain struct, no wire at all.
+                None => {
+                    let mut guard = node.shared.write();
+                    chain::provision(&mut guard, config, &layout.run_directory, now)?
+                }
             };
+            let duration_micros = attempt::micros_since(started);
             layout.append_log(&LogEvent::ChainSignerProvisioned {
                 account_id: provisioned.signer.account_id.clone(),
                 evm_address: provisioned.signer.evm_address.clone(),
@@ -845,10 +878,13 @@ async fn drive(
 
     // `sessionRunner.ts:313-360`: sweep and clean up whatever happened.
     if let (Some(signer), Some(config)) = (&signer, &spec.chain_validation) {
-        let swept = {
-            let now = node.clock.now();
-            let mut guard = node.shared.write();
-            chain::sweep(&mut guard, signer, config, &layout.run_directory, now)
+        let now = node.clock.now();
+        let swept = match remote_for(config)? {
+            Some(remote) => remote::sweep(&remote, signer, &layout.run_directory, now).await,
+            None => {
+                let mut guard = node.shared.write();
+                chain::sweep(&mut guard, signer, config, &layout.run_directory, now)
+            }
         };
         layout.append_log(&LogEvent::ChainSignerSwept {
             account_id: signer.account_id.clone(),

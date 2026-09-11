@@ -223,7 +223,7 @@ fn operator_transaction(chain: &Chain, now: Timestamp, memo: &str, body: Body) -
 }
 
 /// `0.0.N`.
-fn parse_entity_id(value: &str) -> Option<EntityId> {
+pub(crate) fn parse_entity_id(value: &str) -> Option<EntityId> {
     let mut parts = value.split('.');
     let (shard, realm, num) = (parts.next()?, parts.next()?, parts.next()?);
     if parts.next().is_some() || shard != "0" || realm != "0" {

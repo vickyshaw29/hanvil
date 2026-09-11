@@ -7,6 +7,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+mod common;
+
 /// Copy `tests/harness/` into a fresh git repository with one commit, as the CI job does.
 fn fixture_repo(tag: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("hanvil-run-{tag}-{}", std::process::id()));
@@ -56,11 +58,17 @@ fn git_stdout(args: &[&str], cwd: &Path) -> String {
 
 /// `hanvil run` on random ports with an empty environment; returns exit success and stdout.
 fn run(args: &[&str], cwd: &Path) -> (bool, String, String) {
+    run_with_env(args, cwd, &[])
+}
+
+/// `hanvil run` with extra environment, for a recipe that needs an operator.
+fn run_with_env(args: &[&str], cwd: &Path, extra: &[(&str, &str)]) -> (bool, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_hanvil"))
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", std::env::var("HOME").unwrap_or_default())
         // --no-skills: the tests must not clone hedera-skills from the network.
+        .envs(extra.iter().copied())
         .args([
             "run",
             "--no-skills",
@@ -873,6 +881,88 @@ fn the_same_sweep_reverts_when_the_clock_does_not_move() {
         stdout.contains("reverted: Deadline: too early"),
         "the ledger names the revert: {stdout}"
     );
+    let _ = std::fs::remove_dir_all(repo);
+}
+
+/// `network: testnet` end to end, with a second Hanvil standing in for the network.
+///
+/// Nothing here is mocked: the harness builds a real `CryptoCreateTransactionBody`, signs it with
+/// real ECDSA over `keccak256(bodyBytes)`, submits it over real gRPC, polls a real
+/// `TransactionGetReceipt`, and sweeps with a real `CryptoDelete` the account signs for itself.
+/// What it does not cover is public testnet's node addressing, fee schedule, mirror lag and TLS
+/// — named in the README rather than implied.
+#[test]
+fn a_testnet_recipe_provisions_and_sweeps_over_the_wire() {
+    let node = common::Node::boot();
+    let repo = fixture_repo("testnet");
+    let recipe = format!(
+        r#"schemaVersion: 3
+name: testnet-over-the-wire
+prd: .harness/prd.md
+generator:
+  provider: command
+  command: bash
+  args:
+    - -c
+    - "printf 'ok\n' > generated.txt"
+requiredFiles:
+  - generated.txt
+chainValidation:
+  enabled: true
+  network: testnet
+  fundingHbar: 5
+  operator:
+    accountIdEnv: HEDERA_OPERATOR_ID
+    privateKeyEnv: HEDERA_OPERATOR_KEY
+  node:
+    address: "127.0.0.1:{port}"
+    account: 0.0.3
+baseline:
+  commands:
+    - name: install
+      command: "true"
+"#,
+        port = node.grpc_port
+    );
+    std::fs::write(repo.join(".harness/spec-testnet.yaml"), recipe).expect("write");
+    git_stdout(&["add", "-A"], &repo);
+    git_stdout(
+        &["commit", "-q", "--no-gpg-sign", "-m", "testnet recipe"],
+        &repo,
+    );
+
+    // 0.0.1002 and the key the boot banner prints for it.
+    let (ok, stdout, stderr) = run_with_env(
+        &[".harness/spec-testnet.yaml", "--max-attempts", "1"],
+        &repo,
+        &[
+            ("HEDERA_OPERATOR_ID", "0.0.1002"),
+            (
+                "HEDERA_OPERATOR_KEY",
+                "0x7f109a9e3b0d8ecfba9cc23a3614433ce0fa7ddcc80f2a8f10b222179a5a80d6",
+            ),
+        ],
+    );
+    assert!(ok, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert!(
+        stdout.contains("[hanvil] Chain signer provisioned"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("[hanvil] Chain signer swept"), "{stdout}");
+    // CHAIN ran the deploy and stopped: no ledger, because this process owns no chain.
+    assert!(!stdout.contains("[hanvil] Chain ledger"), "{stdout}");
+
+    let events = jsonl_events(&repo);
+    let provisioned = event(&events, "chain_signer_provisioned");
+    assert_eq!(provisioned["network"], "testnet");
+    let account = provisioned["accountId"].as_str().expect("account id");
+    assert!(account.starts_with("0.0."), "{account}");
+
+    // The account really exists on the other node, and really was deleted.
+    let (status, body) = node.get(&format!("/api/v1/accounts/{account}"));
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["deleted"], true, "swept on the network: {body}");
+    node.shutdown();
     let _ = std::fs::remove_dir_all(repo);
 }
 

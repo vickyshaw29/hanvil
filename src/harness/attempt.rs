@@ -675,7 +675,17 @@ async fn run_validation_stages(
 
     if let Some(config) = &spec.chain_validation {
         log_stage("CHAIN", None);
+        // On a network Hanvil does not own, the in-process chain is not the one the app used.
+        // A ledger built from it would read "the attempt sent no transactions", which is true of
+        // that chain and a lie about the run.
+        let owns_the_chain = config.network == crate::harness::spec::ChainNetwork::Local;
         let deploy_findings = run_chain_deploy(spec, workspace, signer, &chain.local).await?;
+        if !deploy_findings.is_empty() && !owns_the_chain {
+            log_stage("SMOKE", Some("skipped — chain deploy failed"));
+            validation.findings.extend(deploy_findings);
+            validation.passed = false;
+            return Ok(validation);
+        }
         if !deploy_findings.is_empty() {
             // The ledger is most wanted exactly here: a deploy command that failed usually
             // failed because the chain refused something, and returning before building it
@@ -688,80 +698,92 @@ async fn run_validation_stages(
             validation.passed = false;
             return Ok(validation);
         }
-        // The flat block, then every phase. Assertion indices run on across all of them so a
-        // finding id never moves when a phase is added, and the ledger is rebuilt before each
-        // set: a `rejections` assertion in one phase must not see the next phase's refusals,
-        // which have not happened yet.
-        advance_chain_time(chain, config.advance_time_seconds);
-        let mut index_offset = 0;
-        let mut assertions = &config.assertions;
-        let mut phase_label: Option<String> = None;
-        let mut phases = config.phases.iter().enumerate();
-        let ledger = loop {
-            let (ledger, findings) = {
-                let guard = chain.shared.read();
-                let ledger = Ledger::since(&guard, mark);
-                let findings =
-                    chain::run_assertions(&guard, assertions, signer, mark, &ledger, index_offset);
-                (ledger, findings)
-            };
-            report_ledger(layout, &ledger, attempt, true)?;
-            layout.append_log(&LogEvent::ChainAssertionsFinished {
-                attempt,
-                passed: findings.is_empty(),
-                finding_count: findings.len(),
-            })?;
-            if !assertions.is_empty() {
-                let of_phase = phase_label
-                    .as_deref()
-                    .map(|name| format!(" — phase {name}"))
-                    .unwrap_or_default();
-                log_phase(
-                    "Chain assertions",
-                    Some(&format!(
-                        "{} of {} passed{of_phase}",
-                        assertions.len() - findings.len(),
-                        assertions.len()
-                    )),
-                );
-            }
-            index_offset += assertions.len();
-            if !findings.is_empty() {
-                validation.chain_ledger = Some(ledger);
-                log_stage("SMOKE", Some("skipped — chain assertions failed"));
-                validation.findings.extend(findings);
-                validation.passed = false;
-                return Ok(validation);
-            }
-
-            let Some((number, phase)) = phases.next() else {
-                break ledger;
-            };
-            let label = phase
-                .name
-                .clone()
-                .unwrap_or_else(|| (number + 1).to_string());
-            log_phase("Chain phase", Some(&label));
-            // The clock moves before the commands run: `increase_time` shifts the offset and
-            // `block.timestamp` only follows on the next mined block, so a command that must see
-            // the later time has to come after the advance.
-            advance_chain_time(chain, phase.advance_time_seconds);
-            let deploy_findings =
-                run_deploy_commands(&phase.deploy, spec, workspace, signer, &chain.local).await?;
-            if !deploy_findings.is_empty() {
-                let ledger = Ledger::since(&chain.shared.read(), mark);
+        // Everything past the deploy commands reads the chain this process owns. On
+        // testnet it owns none, and the loader has already refused the recipe keys
+        // that would ask for it, so CHAIN ends with the deploy.
+        if owns_the_chain {
+            // The flat block, then every phase. Assertion indices run on across all of them so a
+            // finding id never moves when a phase is added, and the ledger is rebuilt before each
+            // set: a `rejections` assertion in one phase must not see the next phase's refusals,
+            // which have not happened yet.
+            advance_chain_time(chain, config.advance_time_seconds);
+            let mut index_offset = 0;
+            let mut assertions = &config.assertions;
+            let mut phase_label: Option<String> = None;
+            let mut phases = config.phases.iter().enumerate();
+            let ledger = loop {
+                let (ledger, findings) = {
+                    let guard = chain.shared.read();
+                    let ledger = Ledger::since(&guard, mark);
+                    let findings = chain::run_assertions(
+                        &guard,
+                        assertions,
+                        signer,
+                        mark,
+                        &ledger,
+                        index_offset,
+                    );
+                    (ledger, findings)
+                };
                 report_ledger(layout, &ledger, attempt, true)?;
-                validation.chain_ledger = Some(ledger);
-                log_stage("SMOKE", Some("skipped — chain deploy failed"));
-                validation.findings.extend(deploy_findings);
-                validation.passed = false;
-                return Ok(validation);
-            }
-            assertions = &phase.assertions;
-            phase_label = Some(label);
-        };
+                layout.append_log(&LogEvent::ChainAssertionsFinished {
+                    attempt,
+                    passed: findings.is_empty(),
+                    finding_count: findings.len(),
+                })?;
+                if !assertions.is_empty() {
+                    let of_phase = phase_label
+                        .as_deref()
+                        .map(|name| format!(" — phase {name}"))
+                        .unwrap_or_default();
+                    log_phase(
+                        "Chain assertions",
+                        Some(&format!(
+                            "{} of {} passed{of_phase}",
+                            assertions.len() - findings.len(),
+                            assertions.len()
+                        )),
+                    );
+                }
+                index_offset += assertions.len();
+                if !findings.is_empty() {
+                    validation.chain_ledger = Some(ledger);
+                    log_stage("SMOKE", Some("skipped — chain assertions failed"));
+                    validation.findings.extend(findings);
+                    validation.passed = false;
+                    return Ok(validation);
+                }
 
-        validation.chain_ledger = Some(ledger);
+                let Some((number, phase)) = phases.next() else {
+                    break ledger;
+                };
+                let label = phase
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| (number + 1).to_string());
+                log_phase("Chain phase", Some(&label));
+                // The clock moves before the commands run: `increase_time` shifts the offset and
+                // `block.timestamp` only follows on the next mined block, so a command that must see
+                // the later time has to come after the advance.
+                advance_chain_time(chain, phase.advance_time_seconds);
+                let deploy_findings =
+                    run_deploy_commands(&phase.deploy, spec, workspace, signer, &chain.local)
+                        .await?;
+                if !deploy_findings.is_empty() {
+                    let ledger = Ledger::since(&chain.shared.read(), mark);
+                    report_ledger(layout, &ledger, attempt, true)?;
+                    validation.chain_ledger = Some(ledger);
+                    log_stage("SMOKE", Some("skipped — chain deploy failed"));
+                    validation.findings.extend(deploy_findings);
+                    validation.passed = false;
+                    return Ok(validation);
+                }
+                assertions = &phase.assertions;
+                phase_label = Some(label);
+            };
+
+            validation.chain_ledger = Some(ledger);
+        }
     }
 
     let Some(playwright_path) = spec.validators.playwright_path.clone() else {

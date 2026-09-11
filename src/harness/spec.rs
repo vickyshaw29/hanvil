@@ -472,6 +472,20 @@ pub(crate) enum ChainAssertion {
     },
 }
 
+/// The consensus node `network: testnet` talks to.
+///
+/// Hanvil's own default is Hedera testnet's first node. A recipe names one when it is pointed at
+/// previewnet, at a private network, or at another Hanvil.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ChainNode {
+    /// `host:port`, plaintext gRPC. Hedera serves :50211 plaintext and :50212 TLS; Hanvil speaks
+    /// the plaintext one.
+    pub(crate) address: String,
+    /// The account that node answers for. A body addressed to a different one is refused with
+    /// `INVALID_NODE_ACCOUNT`.
+    pub(crate) account: String,
+}
+
 /// One `chainValidation.phases[]` entry: move the clock, run commands, then assert.
 ///
 /// The clock moves first because `Chain::increase_time` only shifts the offset — `block.timestamp`
@@ -519,6 +533,8 @@ pub(crate) struct ChainValidation {
     /// Hanvil: later phases, each moving the clock before it acts. Empty for a recipe that does
     /// not use them, which is every recipe written for `hedera-harness`.
     pub(crate) phases: Vec<ChainPhase>,
+    /// Hanvil: which consensus node `network: testnet` submits to. `None` means Hedera testnet.
+    pub(crate) node: Option<ChainNode>,
 }
 
 /// A loaded recipe. Paths are absolute.
@@ -1202,6 +1218,24 @@ fn read_chain_validation(parsed: &Map<String, Value>) -> Result<Option<ChainVali
         .unwrap_or("burnerWallet.pk")
         .to_string();
 
+    // The chain-dependent additions read the in-process chain, and on testnet there is not one.
+    // Refused rather than silently skipped: a recipe that asks for an assertion and is told
+    // nothing would report a pass it never earned.
+    if network == ChainNetwork::Testnet {
+        for (key, present) in [
+            ("assert", !read_chain_assertions(record)?.is_empty()),
+            ("phases", !read_chain_phases(record)?.is_empty()),
+            ("advanceTimeSeconds", read_advance_time(record)? > 0),
+        ] {
+            if present {
+                return Err(invalid(format!(
+                    "chainValidation.{key} reads the in-process chain and is only valid with \
+                     network: \"local\". On testnet the harness is a client, not the node."
+                )));
+            }
+        }
+    }
+
     Ok(Some(ChainValidation {
         network,
         operator_account_id_env: operator_env("accountIdEnv", DEFAULT_OPERATOR_ACCOUNT_ID_ENV)?,
@@ -1216,10 +1250,13 @@ fn read_chain_validation(parsed: &Map<String, Value>) -> Result<Option<ChainVali
         browser_local_storage_key,
         expose_env_vars: read_optional_string_array(expose, "envVars")?.unwrap_or_default(),
         deploy,
-        snapshot_per_attempt: record.get("snapshotPerAttempt") != Some(&Value::Bool(false)),
+        // Nothing to snapshot on somebody else's network; upstream does not snapshot either.
+        snapshot_per_attempt: network == ChainNetwork::Local
+            && record.get("snapshotPerAttempt") != Some(&Value::Bool(false)),
         advance_time_seconds: read_advance_time(record)?,
         assertions: read_chain_assertions(record)?,
         phases: read_chain_phases(record)?,
+        node: read_chain_node(record, network)?,
     }))
 }
 
@@ -1297,6 +1334,34 @@ fn read_deploy_commands(record: &Map<String, Value>, at: &str) -> Result<Vec<Com
             read_command_spec(cmd, true)
         })
         .collect()
+}
+
+/// `chainValidation.node`. Only meaningful off the in-process chain.
+fn read_chain_node(
+    record: &Map<String, Value>,
+    network: ChainNetwork,
+) -> Result<Option<ChainNode>, Error> {
+    let Some(raw) = record.get("node") else {
+        return Ok(None);
+    };
+    if network == ChainNetwork::Local {
+        return Err(invalid(
+            "chainValidation.node names a remote consensus node and is only valid with network: \"testnet\"; on local the node is this process.",
+        ));
+    }
+    let Some(node) = as_object(Some(raw)) else {
+        return Err(invalid("Expected object \"chainValidation.node\"."));
+    };
+    let account = read_string(node, "account")?;
+    if !is_entity_id(&account) {
+        return Err(invalid(format!(
+            "chainValidation.node.account is {account:?}, which is not an id like 0.0.N."
+        )));
+    }
+    Ok(Some(ChainNode {
+        address: read_string(node, "address")?,
+        account,
+    }))
 }
 
 /// `chainValidation.phases[]`. Hanvil's own: `hedera-harness` has no way to move the clock, so

@@ -125,9 +125,15 @@ fn a_missing_prd_and_a_testnet_recipe_are_named() {
         report.contains("  ✘ eval — `validator.enabled` is set but `eval` is not"),
         "{report}"
     );
+    // testnet is supported now; what fails is the operator, and it fails without dialling
+    // anything — an unset env var is answered before a socket is opened.
     assert!(
-        report.contains("  ✘ chain — network: testnet is not supported by hanvil run"),
+        report.contains("  ✘ chain operator — chainValidation.network is \"testnet\" and needs an operator: set A and B."),
         "{report}"
+    );
+    assert!(
+        report.contains("portal.hedera.com"),
+        "the fix names where to get them: {report}"
     );
     assert!(report.contains("3 check(s) failed"), "{report}");
     let _ = std::fs::remove_dir_all(repo);

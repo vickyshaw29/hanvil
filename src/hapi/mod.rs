@@ -10,9 +10,9 @@ mod contract;
 mod crypto;
 mod network;
 mod queries;
-mod render;
+pub(crate) mod render;
 mod unsupported;
-mod wire;
+pub(crate) mod wire;
 
 use std::sync::Arc;
 

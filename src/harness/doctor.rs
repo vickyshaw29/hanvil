@@ -132,7 +132,7 @@ pub(crate) async fn run(options: &Options) -> Report {
     if let Some(check) = check_browser(spec, workspace, options.preflight).await {
         checks.push(check);
     }
-    if let Some(check) = check_chain(spec) {
+    if let Some(check) = check_chain(spec).await {
         checks.push(check);
     }
     Report::from_checks(checks)
@@ -528,17 +528,12 @@ async fn check_browser(spec: &Spec, workspace: &Path, preflight: bool) -> Option
 /// Replaces `doctor.ts` `checkChainEnv`. There are no credentials to check: on `local` the
 /// chain is this process, so the only thing that can be wrong is a recipe pointing at another
 /// machine; `testnet` is what hedera-harness is for.
-fn check_chain(spec: &Spec) -> Option<Check> {
+async fn check_chain(spec: &Spec) -> Option<Check> {
     let chain = spec.chain_validation.as_ref()?;
     match chain.network {
-        ChainNetwork::Testnet => Some(Check::fail(
-            "chain",
-            format!(
-                "network: {} is not supported by hanvil run",
-                chain.network.name()
-            ),
-            "Use network: local, or run this recipe with hedera-harness.",
-        )),
+        // The operator is asked for a balance before a run spends minutes finding out it cannot
+        // fund the signer. `fundingHbar` plus a margin for the fees the network really charges.
+        ChainNetwork::Testnet => Some(check_testnet_operator(chain).await),
         ChainNetwork::Local => {
             let local = chain.local.as_ref()?;
             let urls = [&local.rpc_url, &local.mirror_url, &local.grpc_url];
@@ -557,6 +552,51 @@ fn check_chain(spec: &Spec) -> Option<Check> {
                 ),
             ))
         }
+    }
+}
+
+/// Can the operator pay for this run? One balance query against the real network, before the
+/// run spends minutes discovering it cannot.
+async fn check_testnet_operator(chain: &crate::harness::spec::ChainValidation) -> Check {
+    let operator = match crate::harness::remote::Operator::from_env(
+        &chain.operator_account_id_env,
+        &chain.operator_private_key_env,
+    ) {
+        Ok(operator) => operator,
+        Err(error) => {
+            return Check::fail(
+                "chain operator",
+                error.to_string(),
+                "Both come from portal.hedera.com; network: local needs neither.",
+            );
+        }
+    };
+    let account = operator.account;
+    let remote = crate::harness::remote::Remote {
+        network: "testnet".to_string(),
+        endpoint: crate::harness::remote::Endpoint::testnet(),
+        operator,
+    };
+    let balance = match remote.balance(account).await {
+        Ok(balance) => balance,
+        Err(error) => {
+            return Check::fail(
+                "chain operator",
+                format!("{account} could not be read: {error}"),
+                "Check the account id, the key, and that testnet is reachable.",
+            );
+        }
+    };
+    let hbar = balance.0 as f64 / 100_000_000.0;
+    // A run draws fundingHbar once, plus the network's own fees for the create, the funding
+    // transfer and the sweep.
+    let per_run = chain.funding_hbar + 1.0;
+    let runs = (hbar / per_run).floor() as u64;
+    let detail = format!("{account} holds {hbar:.2} HBAR — {runs} run(s) at {per_run:.0} per run");
+    match runs {
+        0 => Check::fail("chain operator", detail, "Top it up at portal.hedera.com."),
+        1..=3 => Check::warn("chain operator", detail, "Top it up before a long session."),
+        _ => Check::ok("chain operator", detail),
     }
 }
 

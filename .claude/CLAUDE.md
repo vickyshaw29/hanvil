@@ -44,9 +44,10 @@ schema-v3 recipes, a chain snapshot per attempt, and deterministic chain asserti
 | Regex | `regex` | 1.13 | user-supplied secret-scan patterns; `default-features = false`, `std`, `unicode-perl`, `unicode-case`, `perf` |
 | RNG | `rand_core` | 0.6 (`getrandom`) | ephemeral ECDSA signer keys for `hanvil run` |
 
-Deny list: no `ethers-rs`, no `web3`, no `actix`, no `reqwest` in the binary (Hanvil makes no
-outbound calls), no `unsafe`, no `lazy_static` (use `std::sync::LazyLock`), no `chrono` (use
-`std::time` + a `Clock` trait).
+Deny list: no `ethers-rs`, no `web3`, no `actix`, no `unsafe`, no `lazy_static` (use
+`std::sync::LazyLock`), no `chrono` (use `std::time` + a `Clock` trait). An HTTP client is
+allowed in `src/harness/` only, for mirror reads on `network: testnet`; importing one anywhere
+under `src/{state,evm,rpc,mirror,hapi}/` is a build failure, asserted by a test (§3.9).
 
 ## 3. Architecture rules (non-negotiable)
 
@@ -73,9 +74,14 @@ outbound calls), no `unsafe`, no `lazy_static` (use `std::sync::LazyLock`), no `
    `evm_increaseTime` / `evm_setNextBlockTimestamp` mutate `Chain`, not the clock.
 8. **Snapshot = clone.** `Chain: Clone`. `evm_revert(id)` swaps and truncates later snapshots.
    Anything added to `Chain` must be `Clone` + `Serialize` or it does not go in `Chain`.
-9. **No outbound network calls from the node.** The binary never opens an outbound socket.
-    `hanvil run` spawns subprocesses — the agent CLI, `git`, `npx`, the recipe's own commands —
-    and those do talk to the network; the harness itself only reads their stdout.
+9. **The node never opens an outbound socket.** `state/`, `evm/`, `rpc/`, `mirror/` and `hapi/`
+    make no outbound calls, ever; a test asserts no HTTP client is reachable from them. `hanvil
+    run` does open them, and only on `chainValidation.network: testnet`, where the harness is a
+    client of somebody else's network. It also spawns subprocesses — the agent CLI, `git`, `npx`,
+    the recipe's own commands — and those talk to the network on their own account.
+    *(Amended 2026-09-11: was "no outbound network calls from the node". Testnet support makes
+    `hanvil run` a replacement for `hedera-harness` rather than a local-only alternative to it;
+    the node half stays hermetic, which is what made the rule worth having.)*
 10. **Bind `127.0.0.1` by default.** `--host 0.0.0.0` is explicit.
 
 ## 4. Code quality gates (CI fails otherwise)
