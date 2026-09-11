@@ -1,0 +1,45 @@
+# A one-week deadline, tested in microseconds. Phase 0 deploys and checks the lock; the phase
+# moves the chain clock a week, calls sweep(), and checks the contract noticed. Without the
+# advanceTimeSeconds the sweep reverts with "Deadline: too early" and the run fails, so this
+# fixture proves the clock is what moved rather than asserting it.
+schemaVersion: 3
+name: phases-on-hanvil
+prd: .harness/prd.md
+generator:
+  provider: command
+  command: bash
+  args:
+    - -c
+    - "printf 'ok\\n' > generated.txt"
+requiredFiles:
+  - generated.txt
+chainValidation:
+  enabled: true
+  network: local
+  fundingHbar: 10
+  deploy:
+    commands:
+      - name: deploy
+        command: bash .harness/seed-deadline.sh
+        timeoutMs: 30000
+  assert:
+    - contract: created
+      event: "Locked(uint256)"
+      atLeast: 1
+  phases:
+    - name: after-a-week
+      advanceTimeSeconds: 604800
+      deploy:
+        commands:
+          - name: sweep
+            command: bash .harness/sweep-deadline.sh
+            timeoutMs: 30000
+      assert:
+        - contract: created
+          event: "Expired(uint256)"
+          atLeast: 1
+        - rejections: {}
+baseline:
+  commands:
+    - name: install
+      command: "true"

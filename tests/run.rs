@@ -754,6 +754,68 @@ fn a_failed_deploy_command_still_shows_what_the_chain_did() {
     let _ = std::fs::remove_dir_all(repo);
 }
 
+/// A one-week deadline, swept in one run. The contract reverts with "Deadline: too early"
+/// before `openUntil`, so a pass is proof the chain clock moved and not that the assertion was
+/// weak. On testnet this recipe would take a week.
+#[test]
+fn a_phase_moves_the_clock_a_week_before_its_commands_run() {
+    let repo = fixture_repo("phases");
+    let (ok, stdout, stderr) = run(&[".harness/spec-phases.yaml", "--max-attempts", "1"], &repo);
+    assert!(ok, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    for line in [
+        "[hanvil] Chain assertions — 1 of 1 passed",
+        "[hanvil] Chain phase — after-a-week",
+        "[hanvil] Chain time advanced — 604800 s",
+        "[hanvil] Chain deploy — sweep — bash .harness/sweep-deadline.sh",
+        "[hanvil] Chain assertions — 2 of 2 passed — phase after-a-week",
+    ] {
+        assert!(stdout.contains(line), "missing {line:?} in:\n{stdout}");
+    }
+    // The gap between the deploy and the sweep is the week, visible in the ledger itself.
+    assert!(stdout.contains("+604800.0s"), "{stdout}");
+
+    let ledger: Value = serde_json::from_str(
+        &std::fs::read_to_string(run_directory(&repo).join("logs/chain-ledger-attempt-1.json"))
+            .expect("ledger"),
+    )
+    .expect("json");
+    let entries = ledger["entries"].as_array().expect("entries");
+    assert_eq!(entries.len(), 2);
+    // The week, plus the milliseconds the sweep itself took.
+    let gap = entries[1]["atMillis"].as_u64().expect("offset");
+    assert!(
+        (604_800_000..604_900_000).contains(&gap),
+        "a week between the deploy and the sweep, got {gap} ms"
+    );
+    let _ = std::fs::remove_dir_all(repo);
+}
+
+/// Without the phase's advance the same sweep reverts, which is what makes the test above proof
+/// rather than assertion.
+#[test]
+fn the_same_sweep_reverts_when_the_clock_does_not_move() {
+    let repo = fixture_repo("phases-no-advance");
+    let spec = repo.join(".harness/spec-phases.yaml");
+    let relaxed = std::fs::read_to_string(&spec)
+        .expect("spec")
+        .replace("advanceTimeSeconds: 604800", "advanceTimeSeconds: 0");
+    std::fs::write(&spec, relaxed).expect("write");
+    // The fixture is committed by `fixture_repo`; `hanvil run` refuses a dirty tree.
+    git_stdout(&["add", "-A"], &repo);
+    git_stdout(
+        &["commit", "-q", "--no-gpg-sign", "-m", "relax the phase"],
+        &repo,
+    );
+
+    let (ok, stdout, stderr) = run(&[".harness/spec-phases.yaml", "--max-attempts", "1"], &repo);
+    assert!(!ok, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert!(
+        stdout.contains("reverted: Deadline: too early"),
+        "the ledger names the revert: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(repo);
+}
+
 /// The SMOKE gate needs `npx` and a browser; without them the test says so instead of passing.
 fn browser_available() -> bool {
     let npx = Command::new("sh")
