@@ -982,12 +982,27 @@ fn browser_available() -> bool {
     npx && (chromium || chrome)
 }
 
+/// One browser session at a time. Two `@playwright/mcp` servers starting together on a
+/// four-core runner is what broke CI 34603809289: one of them closed its connection before its
+/// first route while the other passed, and the identical commit was green on rerun. libtest
+/// runs these as threads in one process, so a lock is enough.
+static BROWSER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Hold the browser to this test. A test that panics while holding it poisons the lock, and the
+/// next test would then fail for a reason that is not its own.
+fn one_browser_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    BROWSER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[test]
 fn the_smoke_gate_walks_the_routes_and_names_the_forbidden_text() {
     if !browser_available() {
         eprintln!("skipped: the SMOKE gate needs npx and a Chromium or Chrome on this machine");
         return;
     }
+    let _browser = one_browser_at_a_time();
     let repo = std::env::temp_dir().join(format!("hanvil-run-smoke-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
     copy_dir(
@@ -1066,6 +1081,7 @@ fn validate_gives_the_app_the_chain_and_the_signer() {
         eprintln!("skipped: the SMOKE gate needs npx and a Chromium or Chrome on this machine");
         return;
     }
+    let _browser = one_browser_at_a_time();
     let repo =
         std::env::temp_dir().join(format!("hanvil-run-validate-chain-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
