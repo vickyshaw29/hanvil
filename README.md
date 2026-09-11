@@ -1,10 +1,13 @@
 # hanvil
 
-A local Hedera network and a coding-agent harness in one binary. `hanvil` boots in 1 ms, prints
-thirty pre-funded accounts, and serves the three protocols a Hedera app already speaks — JSON-RPC
-on 7546, mirror node REST on 5551, HAPI gRPC on 50211 — from one in-memory chain, on the ports
-`hiero-local-node` uses. `@hiero-ledger/sdk`, viem, hardhat and foundry connect to it unchanged.
-Unlike the Docker stack it can snapshot the whole chain and put it back.
+A local Hedera network and a coding-agent harness in one binary. `hanvil` answers its first
+JSON-RPC call 5 ms after exec, where `hiero-local-node` takes 50.6 s and 3.8 GB across 18
+containers. It prints thirty pre-funded accounts and serves the three protocols a Hedera app
+already speaks — JSON-RPC on 7546, mirror node REST on 5551, HAPI gRPC on 50211 — from one
+in-memory chain, on the ports `hiero-local-node` uses, so `@hiero-ledger/sdk`, viem, hardhat and
+foundry connect to it unchanged. Unlike the Docker stack it can snapshot the whole chain and put
+it back, and survive a restart. Both numbers, and what the stack gives that Hanvil does not, are
+under [Measured](#measured).
 
 `hanvil run` drives a coding agent through a `hedera-harness` recipe — generate, assert, chain,
 smoke, evaluate — with the network in the same process. That is not a faster version of the
@@ -17,24 +20,56 @@ testnet account, no HBAR, no credentials.
 
 ## Measured
 
-On an M-series Mac, 2026-09-10, release build, median of five runs:
+On an M-series Mac, 10 CPUs, Docker given 8 GB, 2026-09-11, release build. hanvil: median of
+five runs, eleven for the banner. `hiero-local-node` (`research/hiero-local-node`, v2.40.2):
+median of three, images pulled first and the pull not counted, stack fully stopped between runs.
+Each was measured on an otherwise idle machine.
+
+| | hanvil | hiero-local-node | how it was measured |
+| --- | --- | --- | --- |
+| Boot to a JSON-RPC answer | 5 ms | 50.6 s | first successful `eth_chainId` on :7546, timed from exec |
+| Boot, as each reports it | 1 ms | 45.9 s | `Started in 1 ms`; `Hedera Local Node successfully started!` |
+| Resident memory | 5.4 MB | 3,898 MB | `ps -o rss=`; `docker stats --no-stream` summed over the stack |
+| On disk | 9.2 MB | 9.4 GB | `ls -l target/release/hanvil`; `docker images` over `docker compose config --images` |
+| Processes | 1 | 18 running, 23 created | `docker ps`, `docker ps -a` |
+| Snapshot and restore the chain | `evm_snapshot` / `evm_revert` | not supported | — |
+| Chain survives a restart | `--state FILE` | not supported | `hiero-local-node` README:630-631 |
+
+Ten thousand times the boot, seven hundred times the memory, a thousand times the disk. The last
+two rows are `hiero-local-node`'s own answer to its own FAQ: *"Can I stop the local node, save
+its state then start it again after a while? No, currently the local node doesn't support network
+freezing. Once you stop it, the next start will be with a genesis state and all of your
+accounts/contracts/tokens will be wiped."*
+
+What that buys is not free: `hiero-local-node` runs the real consensus node, the real mirror node
+and the real relay, and Hanvil emulates them — see [what is emulated, and what is
+not](#what-is-emulated-and-what-is-not). Nothing here says the stack is badly built. It says an
+inner loop should not cost 50 seconds and 3.8 GB.
+
+Hanvil's own numbers, same machine and day:
 
 | | hanvil | how it was measured |
 | --- | --- | --- |
-| Boot to listeners bound | 1 ms | the binary prints `Started in 1 ms` |
-| Resident memory | 5.0 MB | `ps -o rss= -p $(pgrep -x hanvil)` |
-| Binary | 9.6 MB | `ls -l target/release/hanvil` |
 | Accounts pre-funded | 30, 10,000 ℏ each | the boot banner |
-| `hanvil doctor`, every check | 65 ms | `time hanvil doctor` in a copy of `tests/harness` |
+| `hanvil doctor`, every check | 60 ms | `time hanvil doctor` in a copy of `tests/harness` |
 | `hanvil run`, one attempt, the fixture's fake agent | 0.23 s | `time hanvil run --no-skills` in the same copy: node boot, signer, snapshot, agent, ASSERT, CHAIN, state dump, checkpoint commit, sweep |
-| Signer provisioned on the chain | 158 µs | `chain_signer_provisioned.durationMicros` in `.harness/runs/harness.log.jsonl` |
-| Chain snapshot before an attempt | 5 µs | `chain_snapshot_taken.durationMicros`, same log |
-| Chain state dump for replay | 35 KB in 139 µs | `chain_state_written`, same log |
-| Full run with `claude` on `examples/hcs-receipts-api` | 9 min 32 s, 2 attempts | `report.json.durationMs`; the breakdown is under [Harness](#harness) |
+| Signer provisioned on the chain | 152 µs | `chain_signer_provisioned.durationMicros` in `.harness/runs/harness.log.jsonl` |
+| Chain snapshot before an attempt | 10 µs | `chain_snapshot_taken.durationMicros`, same log |
+| Chain state dump for replay | 35,122 bytes in 133 µs | `chain_state_written`, same log |
+| Full run with `claude` on `examples/hcs-receipts-api` | 9 min 32 s, 2 attempts | `report.json.durationMs`, measured 2026-09-10; the breakdown is under [Harness](#harness) |
 
 CI asserts the median boot stays under 100 ms on ubuntu and macos runners
-(`.github/workflows/ci.yml`). The comparison against `hiero-local-node` is not measured yet, so
-this table does not carry it.
+(`.github/workflows/ci.yml`).
+
+To reproduce the comparison:
+
+```
+git clone https://github.com/hiero-ledger/hiero-local-node && cd hiero-local-node
+npm install && npm run build && docker compose pull      # the pull is not timed
+node ./build/index.js stop
+time node ./build/index.js start                         # to its own banner
+docker stats --no-stream --format '{{.MemUsage}}'
+```
 
 ## Run it
 
