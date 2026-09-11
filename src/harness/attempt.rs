@@ -654,6 +654,12 @@ async fn run_validation_stages(
         log_stage("CHAIN", None);
         let deploy_findings = run_chain_deploy(spec, workspace, signer, &chain.local).await?;
         if !deploy_findings.is_empty() {
+            // The ledger is most wanted exactly here: a deploy command that failed usually
+            // failed because the chain refused something, and returning before building it
+            // would hide that.
+            let ledger = Ledger::since(&chain.shared.read(), mark);
+            report_ledger(layout, &ledger, attempt, true)?;
+            validation.chain_ledger = Some(ledger);
             log_stage("SMOKE", Some("skipped — chain deploy failed"));
             validation.findings.extend(deploy_findings);
             validation.passed = false;

@@ -443,6 +443,18 @@ pub(crate) enum ChainAssertion {
         /// Minimum count.
         at_least: u64,
     },
+    /// Submissions the node refused before consensus, since the attempt's snapshot. These leave
+    /// no record, no receipt and no mirror row, so an app that catches the error and carries on
+    /// passes every other gate; this is the one that fails.
+    Rejections {
+        /// Only count this transaction type; any type when absent, including the `UNKNOWN` of a
+        /// body that never decoded.
+        kind: Option<String>,
+        /// Only count those the payer would have paid for.
+        payer: Option<AccountRef>,
+        /// Maximum tolerated. Zero means the app must have none.
+        at_most: u64,
+    },
 }
 
 /// `chainValidation:` block after defaults. Absent, or `enabled: false`, means CHAIN is off.
@@ -1239,13 +1251,13 @@ fn read_chain_assertion(index: usize, item: &Value) -> Result<ChainAssertion, Er
     let Some(entry) = as_object(Some(item)) else {
         return Err(invalid(format!("Expected object at {at}.")));
     };
-    let kinds: Vec<&str> = ["account", "contract", "topic", "transactions"]
+    let kinds: Vec<&str> = ["account", "contract", "topic", "transactions", "rejections"]
         .into_iter()
         .filter(|key| entry.contains_key(*key))
         .collect();
     let [kind] = kinds.as_slice() else {
         return Err(invalid(format!(
-            "{at} must have exactly one of: account, contract, topic, transactions."
+            "{at} must have exactly one of: account, contract, topic, transactions, rejections."
         )));
     };
     match *kind {
@@ -1306,7 +1318,7 @@ fn read_chain_assertion(index: usize, item: &Value) -> Result<ChainAssertion, Er
                 messages_at_least,
             })
         }
-        _ => {
+        "transactions" => {
             let transactions = read_object(entry, "transactions")
                 .map_err(|_| invalid(format!("Expected object \"{at}.transactions\".")))?;
             let kind = read_string(transactions, "type")?;
@@ -1336,6 +1348,43 @@ fn read_chain_assertion(index: usize, item: &Value) -> Result<ChainAssertion, Er
                 kind,
                 payer,
                 at_least,
+            })
+        }
+        _ => {
+            let rejections = read_object(entry, "rejections")
+                .map_err(|_| invalid(format!("Expected object \"{at}.rejections\".")))?;
+            let kind = if rejections.contains_key("type") {
+                let kind = read_string(rejections, "type")?;
+                if !RECORDED_TRANSACTION_TYPES.contains(&kind.as_str()) {
+                    return Err(invalid(format!(
+                        "{at}.rejections.type must be one of: {}.",
+                        RECORDED_TRANSACTION_TYPES.join(", ")
+                    )));
+                }
+                Some(kind)
+            } else {
+                None
+            };
+            let payer = if rejections.contains_key("payer") {
+                Some(read_account_ref(rejections, "payer", &at)?)
+            } else {
+                None
+            };
+            let at_most = match rejections.get("atMost") {
+                None => 0,
+                Some(raw) => match raw.as_f64() {
+                    Some(n) if n.fract() == 0.0 && n >= 0.0 => n as u64,
+                    _ => {
+                        return Err(invalid(format!(
+                            "Expected non-negative integer \"{at}.rejections.atMost\"."
+                        )));
+                    }
+                },
+            };
+            Ok(ChainAssertion::Rejections {
+                kind,
+                payer,
+                at_most,
             })
         }
     }
@@ -1902,11 +1951,35 @@ mod tests {
             }
         );
 
+        // Rejections: an empty object means none are tolerated, and the filters are optional.
+        let rejections = spec_of(&format!(
+            "{MINIMAL}chainValidation:\n  network: local\n  assert:\n    - rejections: {{}}\n    - rejections:\n        atMost: 2\n        type: CONSENSUSSUBMITMESSAGE\n        payer: signer\n"
+        ))
+        .chain_validation
+        .expect("chain")
+        .assertions;
+        assert_eq!(
+            rejections[0],
+            ChainAssertion::Rejections {
+                kind: None,
+                payer: None,
+                at_most: 0
+            }
+        );
+        assert_eq!(
+            rejections[1],
+            ChainAssertion::Rejections {
+                kind: Some("CONSENSUSSUBMITMESSAGE".into()),
+                payer: Some(AccountRef::Signer),
+                at_most: 2
+            }
+        );
+
         let cases = [
             ("- 4\n", "Expected object at chainValidation.assert[0]."),
             (
                 "- {account: signer, topic: created}\n",
-                "chainValidation.assert[0] must have exactly one of: account, contract, topic, transactions.",
+                "chainValidation.assert[0] must have exactly one of: account, contract, topic, transactions, rejections.",
             ),
             (
                 "- {account: signer}\n",
@@ -1932,6 +2005,22 @@ mod tests {
             (
                 "- {transactions: {type: CRYPTOTRANSFER, atLeast: 0}}\n",
                 "Expected positive integer \"chainValidation.assert[0].transactions.atLeast\".",
+            ),
+            (
+                "- {rejections: 0}\n",
+                "Expected object \"chainValidation.assert[0].rejections\".",
+            ),
+            (
+                "- {rejections: {type: CONTRACTCALL}}\n",
+                "chainValidation.assert[0].rejections.type must be one of: CRYPTOCREATEACCOUNT, CRYPTOTRANSFER, CRYPTODELETE, CONSENSUSCREATETOPIC, CONSENSUSSUBMITMESSAGE, ETHEREUMTRANSACTION.",
+            ),
+            (
+                "- {rejections: {atMost: -1}}\n",
+                "Expected non-negative integer \"chainValidation.assert[0].rejections.atMost\".",
+            ),
+            (
+                "- {rejections: {payer: bob}}\n",
+                "chainValidation.assert[0].payer must be \"signer\", an id like 0.0.N, or a 0x address.",
             ),
         ];
         for (body, expected) in cases {

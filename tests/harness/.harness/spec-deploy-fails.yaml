@@ -1,0 +1,27 @@
+# A deploy command that exits non-zero after the chain already refused something. CHAIN returns
+# before the assertions, and the ledger has to be printed anyway: the refusal is usually why the
+# command failed.
+schemaVersion: 3
+name: deploy-fails-on-hanvil
+prd: .harness/prd.md
+generator:
+  provider: command
+  command: bash
+  args:
+    - -c
+    - "printf 'ok\\n' > generated.txt"
+requiredFiles:
+  - generated.txt
+chainValidation:
+  enabled: true
+  network: local
+  fundingHbar: 10
+  deploy:
+    commands:
+      - name: seed
+        command: bash .harness/seed-ledger.sh && exit 3
+        timeoutMs: 30000
+baseline:
+  commands:
+    - name: install
+      command: "true"

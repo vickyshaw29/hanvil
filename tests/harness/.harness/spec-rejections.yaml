@@ -1,0 +1,31 @@
+# The gate that no mirror-node harness can offer. The app sends three transfers and the node
+# refuses two of them; `rejections` fails the run on that alone, without any assertion about
+# what the app was supposed to achieve.
+schemaVersion: 3
+name: rejections-on-hanvil
+prd: .harness/prd.md
+generator:
+  provider: command
+  command: bash
+  args:
+    - -c
+    - "printf 'ok\\n' > generated.txt"
+requiredFiles:
+  - generated.txt
+chainValidation:
+  enabled: true
+  network: local
+  fundingHbar: 10
+  deploy:
+    commands:
+      - name: seed
+        command: bash .harness/seed-ledger.sh
+        timeoutMs: 30000
+  assert:
+    - rejections:
+        type: ETHEREUMTRANSACTION
+        atMost: 0
+baseline:
+  commands:
+    - name: install
+      command: "true"

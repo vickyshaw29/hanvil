@@ -640,6 +640,68 @@ fn a_refused_transaction_reaches_the_finding_the_prompt_and_the_artifact() {
     let _ = std::fs::remove_dir_all(repo);
 }
 
+/// The gate a mirror-node harness cannot offer: the run fails on the refusals alone, with no
+/// assertion about what the app was supposed to achieve.
+#[test]
+fn a_refusal_fails_the_run_on_its_own() {
+    let repo = fixture_repo("rejections");
+    let (ok, stdout, stderr) = run(
+        &[".harness/spec-rejections.yaml", "--max-attempts", "1"],
+        &repo,
+    );
+    assert!(!ok, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert!(
+        stdout.contains("[hanvil] Chain assertions — 0 of 1 passed"),
+        "{stdout}"
+    );
+    let run_dir = run_directory(&repo);
+    let validation: Value = serde_json::from_str(
+        &std::fs::read_to_string(run_dir.join("logs/validation-attempt-1.json"))
+            .expect("validation"),
+    )
+    .expect("json");
+    assert_eq!(validation["findings"][0]["id"], "chain:0:rejections");
+    let message = validation["findings"][0]["message"]
+        .as_str()
+        .expect("message");
+    assert!(
+        message.contains(
+            "the node refused 2 ETHEREUMTRANSACTION submission(s), more than the 0 allowed"
+        ),
+        "{message}"
+    );
+    assert!(
+        message.ends_with("a refused transaction leaves no record on any Hedera network"),
+        "{message}"
+    );
+    let _ = std::fs::remove_dir_all(repo);
+}
+
+/// A deploy command that fails returns before the assertions. The ledger is printed anyway,
+/// because a refusal is usually why the command failed.
+#[test]
+fn a_failed_deploy_command_still_shows_what_the_chain_did() {
+    let repo = fixture_repo("deploy-fails");
+    let (ok, stdout, stderr) = run(
+        &[".harness/spec-deploy-fails.yaml", "--max-attempts", "1"],
+        &repo,
+    );
+    assert!(!ok, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    for line in [
+        "[hanvil] Chain ledger — attempt 1 — 3 transaction(s), 2 rejected before consensus",
+        "[hanvil] Stage 4/5 SMOKE — skipped — chain deploy failed",
+    ] {
+        assert!(stdout.contains(line), "missing {line:?} in:\n{stdout}");
+    }
+    assert!(
+        run_directory(&repo)
+            .join("logs/chain-ledger-attempt-1.json")
+            .exists(),
+        "the artifact is written on the deploy-failure path too"
+    );
+    let _ = std::fs::remove_dir_all(repo);
+}
+
 /// The SMOKE gate needs `npx` and a browser; without them the test says so instead of passing.
 fn browser_available() -> bool {
     let npx = Command::new("sh")

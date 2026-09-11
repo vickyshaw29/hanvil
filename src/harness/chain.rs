@@ -439,6 +439,7 @@ fn attribution_kind(assertion: &ChainAssertion) -> &str {
         ChainAssertion::Topic { .. } => "CONSENSUSSUBMITMESSAGE",
         ChainAssertion::Contract { .. } => "ETHEREUMTRANSACTION",
         ChainAssertion::Transactions { kind, .. } => kind,
+        ChainAssertion::Rejections { kind, .. } => kind.as_deref().unwrap_or(""),
         ChainAssertion::Account { .. } => "",
     }
 }
@@ -486,6 +487,18 @@ pub(crate) fn run_assertions(
                 payer,
                 at_least,
             } => check_transactions(chain, kind, payer.as_ref(), signer, *at_least, since),
+            ChainAssertion::Rejections {
+                kind,
+                payer,
+                at_most,
+            } => check_rejections(
+                chain,
+                ledger,
+                kind.as_deref(),
+                payer.as_ref(),
+                signer,
+                *at_most,
+            ),
         };
         if let Some(reason) = failure {
             let kind = match assertion {
@@ -493,6 +506,7 @@ pub(crate) fn run_assertions(
                 ChainAssertion::Contract { .. } => "contract",
                 ChainAssertion::Topic { .. } => "topic",
                 ChainAssertion::Transactions { .. } => "transactions",
+                ChainAssertion::Rejections { .. } => "rejections",
             };
             let finding = Finding::new(
                 format!("chain:{index}:{kind}"),
@@ -618,6 +632,47 @@ fn check_transactions(
         ));
     }
     None
+}
+
+/// Refusals since the attempt's snapshot, read off the ledger rather than the chain: a refused
+/// transaction has no record to count. `hedera-harness` cannot express this assertion at all —
+/// its ground truth is a mirror node, and a mirror node has no row for one.
+fn check_rejections(
+    chain: &Chain,
+    ledger: &Ledger,
+    kind: Option<&str>,
+    payer: Option<&AccountRef>,
+    signer: Option<&Signer>,
+    at_most: u64,
+) -> Option<String> {
+    let payer_label = payer.map(|which| resolve_account(chain, which, signer).0);
+    let matching: Vec<&crate::harness::ledger::Entry> = ledger
+        .rejected()
+        .filter(|entry| kind.is_none_or(|kind| entry.kind == kind))
+        .filter(|entry| {
+            payer_label
+                .as_ref()
+                .is_none_or(|label| &entry.payer == label)
+        })
+        .collect();
+    let count = matching.len() as u64;
+    if count <= at_most {
+        return None;
+    }
+    let of_kind = kind.map(|kind| format!(" {kind}")).unwrap_or_default();
+    let paid_by = payer_label
+        .map(|label| format!(" from {label}"))
+        .unwrap_or_default();
+    let reasons = matching
+        .iter()
+        .map(|entry| entry.result.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(format!(
+        "the node refused {count}{of_kind} submission(s){paid_by}, more than the {at_most} allowed ({reasons}); a refused transaction leaves no record on any Hedera network"
+    ))
 }
 
 #[cfg(test)]
@@ -836,6 +891,107 @@ mod tests {
         assert_eq!(none_since.len(), 1);
         assert_eq!(snapshot_id(26), "0x1a");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The assertion `hedera-harness` cannot express: an app that had transactions refused.
+    #[test]
+    fn the_rejections_assertion_fails_on_what_no_mirror_node_would_show() {
+        use crate::state::{BodyKind, Rejection};
+
+        let mut chain = genesis_chain();
+        let signer = signer();
+        let mark = Mark::of(&chain);
+        let at = Timestamp::from_secs(1_700_000_100);
+
+        // Two refusals: one the signer caused, one from another account.
+        chain.reject(Rejection {
+            at,
+            kind: Some(BodyKind::ConsensusSubmitMessage),
+            payer: Some(EntityId(1032)),
+            status: Some(Status::InvalidSignature),
+            from: None,
+            message: String::new(),
+        });
+        chain.reject(Rejection {
+            at,
+            kind: Some(BodyKind::CryptoTransfer),
+            payer: Some(EntityId(1002)),
+            status: Some(Status::InsufficientPayerBalance),
+            from: None,
+            message: String::new(),
+        });
+        let ledger = Ledger::since(&chain, &mark);
+
+        let assertions = config(
+            "  assert:\n    - rejections: {}\n    - rejections:\n        type: CONSENSUSSUBMITMESSAGE\n        payer: signer\n    - rejections:\n        type: CRYPTODELETE\n    - rejections:\n        atMost: 2\n",
+        )
+        .assertions;
+        let findings = run_assertions(&chain, &assertions, Some(&signer), &mark, &ledger);
+
+        // 0 fails (two refusals, none allowed); 1 fails (the signer's one); 2 and 3 pass.
+        assert_eq!(findings.len(), 2);
+        assert_eq!(findings[0].id, "chain:0:rejections");
+        assert!(
+            findings[0].message.contains(
+                "the node refused 2 submission(s), more than the 0 allowed (INSUFFICIENT_PAYER_BALANCE; INVALID_SIGNATURE)"
+            ),
+            "{}",
+            findings[0].message
+        );
+        assert!(
+            findings[0]
+                .message
+                .ends_with("a refused transaction leaves no record on any Hedera network"),
+            "{}",
+            findings[0].message
+        );
+        assert_eq!(findings[1].id, "chain:1:rejections");
+        assert!(
+            findings[1]
+                .message
+                .contains("refused 1 CONSENSUSSUBMITMESSAGE submission(s) from 0.0.1032"),
+            "{}",
+            findings[1].message
+        );
+
+        // A clean chain has nothing to report.
+        let clean = genesis_chain();
+        let clean_mark = Mark::of(&clean);
+        assert!(
+            run_assertions(
+                &clean,
+                &assertions,
+                Some(&signer),
+                &clean_mark,
+                &Ledger::since(&clean, &clean_mark),
+            )
+            .is_empty()
+        );
+    }
+
+    /// A body that never decoded has no kind, so an unfiltered assertion still counts it.
+    #[test]
+    fn a_rejection_with_no_kind_is_counted_only_when_no_type_is_named() {
+        use crate::state::Rejection;
+
+        let mut chain = genesis_chain();
+        let mark = Mark::of(&chain);
+        chain.reject(Rejection {
+            at: Timestamp::from_secs(1_700_000_100),
+            kind: None,
+            payer: None,
+            status: Some(Status::InvalidTransaction),
+            from: None,
+            message: String::new(),
+        });
+        let ledger = Ledger::since(&chain, &mark);
+
+        let any = config("  assert:\n    - rejections: {}\n").assertions;
+        assert_eq!(run_assertions(&chain, &any, None, &mark, &ledger).len(), 1);
+
+        let typed =
+            config("  assert:\n    - rejections:\n        type: CRYPTOTRANSFER\n").assertions;
+        assert!(run_assertions(&chain, &typed, None, &mark, &ledger).is_empty());
     }
 
     fn signer() -> Signer {
