@@ -83,7 +83,17 @@ baseline:
 # validator:
 #   enabled: true
 #
-# CHAIN provisions a funded ephemeral testnet account. Testnet only.
+# CHAIN provisions a funded ephemeral account and asserts on what the app put on chain.
+#
+# Against `hanvil run`, network: local needs no operator and no credentials:
+# chainValidation:
+#   enabled: true
+#   network: local
+#   assert:
+#     - { topic: created, messagesAtLeast: 3 }
+#     - { rejections: { atMost: 0 } }   # nothing the node refused
+#
+# Against hedera-harness, testnet with an operator:
 # chainValidation:
 #   enabled: true
 #   network: testnet

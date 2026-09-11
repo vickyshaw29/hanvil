@@ -85,7 +85,7 @@ arrive, so this makes time move, it does not batch.
 | Port | What | Surface |
 | --- | --- | --- |
 | 7546 | JSON-RPC, relay shape | `eth_chainId` `eth_blockNumber` `eth_getBalance` `eth_getCode` `eth_getStorageAt` `eth_getTransactionCount` `eth_gasPrice` `eth_maxPriorityFeePerGas` `eth_feeHistory` `eth_call` `eth_estimateGas` `eth_sendRawTransaction` `eth_sendTransaction` `eth_getTransactionByHash` `eth_getTransactionReceipt` `eth_getBlockBy{Number,Hash}` `eth_getBlockReceipts` `eth_getLogs` `eth_newFilter` `eth_newBlockFilter` `eth_getFilterChanges` `eth_getFilterLogs` `eth_uninstallFilter` `eth_getBlockTransactionCountBy{Hash,Number}` `eth_getTransactionByBlock{Hash,Number}AndIndex` `net_version` `net_listening` `web3_clientVersion` `web3_sha3` |
-| 7546 | Anvil cheats | `evm_snapshot` `evm_revert` `evm_mine` `evm_increaseTime` `evm_setNextBlockTimestamp` `anvil_setBalance` `anvil_setCode` `anvil_setNonce` `anvil_setStorageAt` `anvil_impersonateAccount` `anvil_stopImpersonatingAccount` `anvil_mine` `anvil_nodeInfo`, and the `hardhat_` aliases |
+| 7546 | Anvil cheats | `evm_snapshot` `evm_revert` `evm_mine` `evm_increaseTime` `evm_setNextBlockTimestamp` `anvil_setBalance` `anvil_setCode` `anvil_setNonce` `anvil_setStorageAt` `anvil_impersonateAccount` `anvil_stopImpersonatingAccount` `anvil_mine` `anvil_nodeInfo`, and the `hardhat_` aliases. Plus `hanvil_rejections`, which is Hanvil's own |
 | 5551 | Mirror node REST | `/api/v1/accounts/{id\|alias\|evm}` `/accounts/{id}/tokens` `/balances` `/transactions` (`account.id` `transactiontype` `result` `timestamp` `limit` `order`) `/transactions/{0.0.x-sss-nnn}` `/contracts/{id\|address}` `/contracts/{id}/results` `/contracts/results/{hash\|txId}` `/contracts/results/logs` `/topics/{id}` `/topics/{id}/messages` `/topics/{id}/messages/{n}` `/blocks` `/blocks/{number\|hash}` `/network/nodes` `/network/fees` `/network/exchangerate` |
 | 50211 | HAPI gRPC | `CryptoService`: `createAccount` `cryptoTransfer` `cryptoDelete` `cryptoGetBalance` `getAccountInfo` `getTransactionReceipts` `getTxRecordByTxID`. `ConsensusService`: `createTopic` `submitMessage` `getTopicInfo`. `SmartContractService`: `callEthereum` `contractCallLocalMethod`. `NetworkService`: `getVersionInfo`. `FileService`, `TokenService`, `ScheduleService`, `FreezeService`, `UtilService` and `AddressBookService` are routed and answer `NOT_SUPPORTED` |
 
@@ -114,10 +114,11 @@ turns that off and leaves every other check running. Topic running hashes are SH
 version 3 input list from `transaction_receipt.proto`.
 
 A transaction that fails precheck leaves no record, no receipt and no mirror row, as on Hedera.
-Hanvil additionally keeps it in a list of its own that no endpoint exposes — the wire behaves
-exactly as a node does — and `hanvil run` reads that list for [the chain
-ledger](#the-chain-ledger). `--state` carries it; a state file written before the list existed
-still loads.
+Hanvil additionally keeps it in a list of its own, which `hanvil run` reads for [the chain
+ledger](#the-chain-ledger) and `hanvil_rejections` answers over JSON-RPC. The HAPI and mirror
+surfaces are unchanged — a client sees exactly what a node would show it — and `hanvil_` is a
+cheat namespace beside `anvil_`, not a Hedera endpoint. `--state` carries the list; a state file
+written before it existed still loads.
 
 Not emulated. Each of these is a deliberate hole, not an oversight:
 
@@ -278,6 +279,29 @@ count and nothing else. With it the finding carries the cause, and so does the r
 }
 ```
 
+Outside a run, the same list is one call away — for anyone driving `hanvil` with viem, hardhat
+or foundry and wondering where a transaction went:
+
+```
+curl -s -X POST localhost:7546 -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"hanvil_rejections","params":[]}' | jq .result
+```
+```json
+[
+  {
+    "at": "1789107752.728516000",
+    "kind": "ETHEREUMTRANSACTION",
+    "payer": "0.0.1002",
+    "from": "0x00000000000000000000000000000000000003ea",
+    "code": null,
+    "reason": "Invalid params: 1 weibar is not a multiple of 10^10 (1 tinybar); the relay rejects such values"
+  }
+]
+```
+
+An optional first argument caps the rows and keeps the most recent. `code` is the
+`ResponseCodeEnum` number for a HAPI refusal and `null` for a JSON-RPC one, which has none.
+
 The repair prompt gains a `## Chain Ledger` section with the whole table and one sentence saying
 a `REJECTED` row cannot be looked up anywhere. The validator agent gets the same table before it
 opens the browser, so a UI that toasts success over a refused transaction is an issue rather than
@@ -304,7 +328,9 @@ hanvil run             # needs `claude` on PATH, Node 20+ and npx
 
 The recipe is schema v3 as `hedera-harness` reads it — the same keys, defaults, error strings,
 prompts and artifact layout, ported from `dev` @ `587a2f3` and cited by file and line in
-`src/harness/` — with four additions under `chainValidation`, all optional:
+`src/harness/` — with five additions under `chainValidation`, all optional. Upstream's loader
+ignores unknown keys under `chainValidation`, so a recipe using them still loads on
+`hedera-harness`:
 
 ```yaml
 chainValidation:
@@ -320,8 +346,45 @@ chainValidation:
     - { topic: created, messagesAtLeast: 3 }        # or topic: 0.0.N
     - { account: signer, minBalanceHbar: 40 }       # or 0.0.N / 0x…; exists: / deleted:
     - { transactions: { type: CONSENSUSSUBMITMESSAGE, payer: signer, atLeast: 3 } }
-    # - { contract: 0x…, deployed: true }
+    - { contract: created, event: "Stored(address,uint256)", atLeast: 3 }   # or contract: 0x…
+    - { contract: created, deployed: true }
+    - { rejections: { atMost: 0 } }                 # or type: / payer: to scope it
+  phases:                   # each one advances the clock, runs its commands, then asserts
+    - name: after-a-week
+      advanceTimeSeconds: 604800
+      deploy:
+        commands: [{ name: claim, command: node scripts/claim.js }]
+      assert:
+        - { contract: created, event: "Expired(uint256)", atLeast: 1 }
 ```
+
+`contract: created` is the newest contract on the chain, the meaning `topic: created` already
+has, so a recipe can assert on a deployment whose address it never sees. `rejections` fails on
+transactions the node refused — the rows a mirror node does not have, so `hedera-harness` cannot
+express this assertion at all. A phase moves the clock *before* its commands, because
+`increase_time` shifts the offset and `block.timestamp` only follows on the next mined block; the
+flat `deploy` keeps its existing deploy-then-advance order. Assertion indices run on across the
+flat block and every phase, so adding a phase never renumbers a finding id.
+
+From `tests/harness/.harness/spec-phases.yaml`, where a contract reverts with
+`Deadline: too early` until its window closes:
+
+```
+[hanvil] Chain assertions — 1 of 1 passed
+[hanvil] Chain phase — after-a-week
+[hanvil] Chain time advanced — 604800 s
+[hanvil] Chain deploy — sweep — bash .harness/sweep-deadline.sh
+[hanvil] Chain ledger — attempt 1 — 2 transaction(s)
+  #  kind                 payer     result   entity                                               at
+  1  ETHEREUMTRANSACTION  0.0.1002  SUCCESS  0x4388985fc3EFb7978b71b7fc59114aa64A42E285 (deploy)  +0ms
+  2  ETHEREUMTRANSACTION  0.0.1002  SUCCESS  —                                                    +604800.0s
+[hanvil] Chain assertions — 2 of 2 passed — phase after-a-week
+Run PASSED
+```
+
+A week, in the time the sweep took. With `advanceTimeSeconds: 0` the same run fails and the
+ledger reads `reverted: Deadline: too early`, which is what makes the pass evidence rather than
+an assertion; both are in `tests/run.rs`.
 
 The first run on the example, 2026-09-10, `agent: claude`, `--max-attempts 3`, as printed:
 
@@ -378,6 +441,13 @@ Against the TypeScript harness, on the same recipe:
 - The chain ledger, including the transactions the node refused. A mirror node has no row for
   one, so this half of the chain is not reachable from the TypeScript harness at all — not as a
   missing feature, but because the data is not written on any Hedera network.
+- Assertions it cannot express: `rejections` fails a run on those refusals; `contract: created`
+  with an `event` counts decoded logs; `phases` moves the chain clock between assertion sets, so
+  a one-week deadline is tested in the time a transaction takes rather than in a week.
+- `report.json` carries `chainLedger` — transactions, succeeded, failed, rejected — so CI asserts
+  on what a run did to the chain without parsing the rows.
+- A repair that sends the same refused transaction as the attempt before it is told so, in the
+  console and in its own prompt.
 - Replay of any attempt's chain with `--state`.
 - No operator id, no key, no environment variable. `chainValidation` is two lines.
 - An activity log for `claude` as well as `cursor`: the `TOOL START edit /…/lib/hedera.js`

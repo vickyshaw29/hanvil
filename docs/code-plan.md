@@ -371,8 +371,35 @@ a failed attempt when attempts remain (`snapshotPerAttempt: false` opts out); a 
 it. The signer is created with `Chain::apply_hapi(Body::CreateAccount)` from `0.0.1002`, no
 signature involved; swept with `Body::Delete`.
 
-Recipe additions over schema v3: `chainValidation.{snapshotPerAttempt, advanceTimeSeconds,
-assert[]}`; `network: local` needs no `operator`. Everything else — keys, defaults, error strings,
+Recipe additions over schema v3 (2026-09-11): `chainValidation.{snapshotPerAttempt,
+advanceTimeSeconds, assert[], phases[]}`; `network: local` needs no `operator`. Upstream's
+`specLoader.ts` warns on unknown keys at the top level only (`specLoader.ts:157-167`), so every
+one of these is invisible to it and a recipe using them still loads on `hedera-harness`.
+
+`assert[]` takes five forms: `account`, `contract`, `topic`, `transactions` and `rejections`.
+Three decisions, recorded here because they are not derivable from the code:
+
+- **`rejections` is evaluated on the ledger, not the chain.** A refused transaction has no record
+  to count; `Chain::rejections` is the only place it exists. This assertion has no counterpart
+  upstream and cannot have one — `hedera-harness` reads a mirror node.
+- **`contract: created` is the newest contract on the chain**, matching `topic: created`, so a
+  recipe asserts on a deployment whose address it never sees. `event` is validated at load by
+  `evm::event_topic`: a recipe writes the signature by hand, and a silently wrong topic0 counts
+  zero events and reads as an app that never emitted one.
+- **A phase advances the clock, then runs its commands, then asserts.** The flat block keeps
+  deploy → advance → assert for compatibility. `Chain::increase_time` shifts `time_offset` only
+  and `block.timestamp` follows on the next mined block (`state/mod.rs:555-576`), so a command
+  that must see the later time has to run after the advance. Assertion indices are one running
+  counter across the flat block and every phase, so adding a phase never renumbers a finding id,
+  which the findings lifecycle keys on. The ledger is rebuilt before each phase's assertions: a
+  `rejections` assertion in one phase must not see the next phase's refusals. Counts for
+  `transactions` and `rejections` stay "since the attempt's snapshot" in every phase — one
+  meaning, not one per phase.
+
+`hanvil_rejections` answers the same list over JSON-RPC, under a `hanvil_` prefix routed by
+`rpc::cheats::handles`. It is not in the `anvil_` namespace: it is not an Anvil method and a
+script written for Anvil should not find it. The HAPI and relay surfaces are unchanged.
+`report.json` carries `chainLedger` with the four counts. Everything else — keys, defaults, error strings,
 prompts, artifact layout, git behaviour, console lines — is copied from the TypeScript source and
 cited by `file:line` in the code. Documented deviations: the `claude` preset's idle timeout is
 600 s (a `Bash` tool call is silent until it returns); `CLAUDECODE`/`CLAUDE_CODE_*` are stripped
