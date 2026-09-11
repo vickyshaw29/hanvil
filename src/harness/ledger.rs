@@ -215,9 +215,9 @@ impl Ledger {
         for entry in &self.entries {
             let result = match entry.code {
                 Some(code) if entry.outcome != Outcome::Success => {
-                    format!("{} {code}", entry.result)
+                    format!("{} {code}", clip(&entry.result))
                 }
-                _ => entry.result.clone(),
+                _ => clip(&entry.result),
             };
             rows.push([
                 entry.index.to_string(),
@@ -228,7 +228,7 @@ impl Ledger {
                     _ => result,
                 },
                 entry.entity.clone().unwrap_or_else(|| "—".to_string()),
-                format!("+{:.1}s", entry.at_millis as f64 / 1000.0),
+                offset(entry.at_millis),
             ]);
         }
         let widths: Vec<usize> = (0..6)
@@ -282,6 +282,28 @@ impl Ledger {
             ));
         }
         Some(parts.join("; "))
+    }
+}
+
+/// A relay message runs to a sentence and would set the column width for every row. The table
+/// is for reading; `result` in the JSON artifact and in a finding's details is never clipped.
+const RESULT_WIDTH: usize = 56;
+
+fn clip(result: &str) -> String {
+    if result.chars().count() <= RESULT_WIDTH {
+        return result.to_string();
+    }
+    let kept: String = result.chars().take(RESULT_WIDTH - 1).collect();
+    format!("{}…", kept.trim_end())
+}
+
+/// Offsets inside a second are where a deploy script's transactions land, so milliseconds are
+/// what the column has to show.
+fn offset(millis: i64) -> String {
+    if millis.abs() < 1_000 {
+        format!("+{millis}ms")
+    } else {
+        format!("+{:.1}s", millis as f64 / 1000.0)
     }
 }
 
@@ -480,6 +502,8 @@ mod tests {
         );
         assert_eq!(ledger.entries[0].at_millis, 0);
         assert_eq!(ledger.entries[3].at_millis, 1_800);
+        assert_eq!(offset(1_800), "+1.8s");
+        assert_eq!(offset(6), "+6ms");
         assert_eq!(ledger.entries[0].entity.as_deref(), Some("0.0.1008"));
         assert_eq!(ledger.entries[1].entity.as_deref(), Some("seq 1"));
         assert_eq!(ledger.entries[1].fee_tinybar, crate::state::HAPI_FEE.0);
@@ -516,6 +540,42 @@ mod tests {
         assert!(!ledger.is_empty());
     }
 
+    /// A relay message is a sentence; the table clips it and the artifact does not.
+    #[test]
+    fn a_long_relay_message_is_clipped_in_the_table_only() {
+        let mut chain = chain();
+        let mark = Mark::of(&chain);
+        chain.reject(Rejection {
+            at: later(NOW, 6),
+            kind: Some(BodyKind::EthereumTransaction),
+            payer: Some(PAYER),
+            status: None,
+            from: None,
+            message: "Invalid params: 1 weibar is not a multiple of 10^10 (1 tinybar); \
+                      the relay rejects such values"
+                .into(),
+        });
+        let ledger = Ledger::since(&chain, &mark);
+        assert_eq!(
+            ledger.entries[0].result,
+            "Invalid params: 1 weibar is not a multiple of 10^10 (1 tinybar); the relay rejects such values"
+        );
+        let row = ledger.table().lines().nth(1).expect("a row").to_string();
+        assert!(
+            row.contains("REJECTED Invalid params: 1 weibar is not a multiple of 10^10 (1…"),
+            "{row}"
+        );
+        assert!(row.ends_with("+0ms"), "the first row is the origin: {row}");
+        // The cause the agent is given keeps the whole sentence.
+        assert!(
+            ledger
+                .attribution("ETHEREUMTRANSACTION")
+                .expect("a cause")
+                .contains("the relay rejects such values"),
+            "clipping is for the table only"
+        );
+    }
+
     #[test]
     fn the_table_aligns_and_marks_refusals() {
         let mut chain = chain();
@@ -534,7 +594,7 @@ mod tests {
         );
         assert_eq!(
             lines[1],
-            "1  CRYPTOTRANSFER  0.0.1002  REJECTED INSUFFICIENT_PAYER_BALANCE 10  —       +0.0s"
+            "1  CRYPTOTRANSFER  0.0.1002  REJECTED INSUFFICIENT_PAYER_BALANCE 10  —       +0ms"
         );
     }
 

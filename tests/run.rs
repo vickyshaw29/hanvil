@@ -574,6 +574,72 @@ fn a_chain_assertion_the_app_cannot_meet_fails_the_run_with_a_runtime_repair() {
     let _ = std::fs::remove_dir_all(repo);
 }
 
+/// The ledger is the half of the chain a mirror node does not have. An app sends three
+/// transfers, the node refuses two of them for a value that is not a whole tinybar, and the
+/// finding names that rather than only the count that came up short.
+#[test]
+fn a_refused_transaction_reaches_the_finding_the_prompt_and_the_artifact() {
+    let repo = fixture_repo("ledger");
+    let (ok, stdout, stderr) = run(&[".harness/spec-ledger.yaml", "--max-attempts", "1"], &repo);
+    assert!(!ok, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    for line in [
+        "[hanvil] Chain ledger — attempt 1 — 3 transaction(s), 2 rejected before consensus",
+        "1  ETHEREUMTRANSACTION  0.0.1002  SUCCESS",
+        "REJECTED Invalid params: 1 weibar is not a multiple of 10^10 (1…",
+        "[hanvil] Chain assertions — 0 of 1 passed",
+    ] {
+        assert!(stdout.contains(line), "missing {line:?} in:\n{stdout}");
+    }
+
+    let run_dir = run_directory(&repo);
+    let validation: Value = serde_json::from_str(
+        &std::fs::read_to_string(run_dir.join("logs/validation-attempt-1.json"))
+            .expect("validation"),
+    )
+    .expect("json");
+    let details = validation["findings"][0]["details"]
+        .as_str()
+        .expect("the finding carries the cause");
+    assert!(
+        details.starts_with("2 ETHEREUMTRANSACTION submission(s) were refused before consensus"),
+        "{details}"
+    );
+    assert!(
+        details.ends_with("— no record exists for them on any Hedera network"),
+        "{details}"
+    );
+
+    // The artifact keeps every row, unclipped, with the fee a refusal did not cost.
+    let ledger: Value = serde_json::from_str(
+        &std::fs::read_to_string(run_dir.join("logs/chain-ledger-attempt-1.json")).expect("ledger"),
+    )
+    .expect("json");
+    let entries = ledger["entries"].as_array().expect("entries");
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0]["outcome"], "success");
+    assert!(entries[0]["feeTinybar"].as_u64().expect("fee") > 0);
+    assert_eq!(entries[2]["outcome"], "rejected");
+    assert_eq!(entries[2]["feeTinybar"], 0);
+    assert_eq!(
+        entries[2]["result"],
+        "Invalid params: 1 weibar is not a multiple of 10^10 (1 tinybar); the relay rejects such values"
+    );
+
+    // The chain the attempt left says the same thing from the other side: one transaction to
+    // read back, and two refusals that only the node kept.
+    let state: Value = serde_json::from_str(
+        &std::fs::read_to_string(run_dir.join("logs/chain-state-attempt-1.json")).expect("state"),
+    )
+    .expect("json");
+    assert_eq!(
+        state["txs"].as_object().expect("txs").len(),
+        1,
+        "a refused transaction is not a transaction"
+    );
+    assert_eq!(state["rejections"].as_array().expect("rejections").len(), 2);
+    let _ = std::fs::remove_dir_all(repo);
+}
+
 /// The SMOKE gate needs `npx` and a browser; without them the test says so instead of passing.
 fn browser_available() -> bool {
     let npx = Command::new("sh")

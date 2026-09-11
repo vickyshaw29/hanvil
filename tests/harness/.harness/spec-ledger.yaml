@@ -1,0 +1,31 @@
+# An app that sends three transfers and gets two of them refused, then an assertion that counts
+# what landed. The point is the finding: without the ledger it says only that one transfer
+# arrived where three were wanted, which is the symptom. With it, the cause is named.
+schemaVersion: 3
+name: ledger-on-hanvil
+prd: .harness/prd.md
+generator:
+  provider: command
+  command: bash
+  args:
+    - -c
+    - "printf 'ok\\n' > generated.txt"
+requiredFiles:
+  - generated.txt
+chainValidation:
+  enabled: true
+  network: local
+  fundingHbar: 10
+  deploy:
+    commands:
+      - name: seed
+        command: bash .harness/seed-ledger.sh
+        timeoutMs: 30000
+  assert:
+    - transactions:
+        type: ETHEREUMTRANSACTION
+        atLeast: 3
+baseline:
+  commands:
+    - name: install
+      command: "true"
