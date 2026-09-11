@@ -315,6 +315,9 @@ pub(crate) async fn validate_semantic(
             eval_relative_path: context.eval_relative_path.as_deref(),
             extra_args: &extra_args,
             mirror_base_url: &local.mirror_url,
+            // `validate-semantic` judges the workspace as it stands; there is no attempt whose
+            // chain a ledger would cover.
+            chain_ledger: None,
             env: env.clone(),
         })
         .await;

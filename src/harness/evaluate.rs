@@ -16,6 +16,7 @@ use crate::harness::chain::Signer;
 use crate::harness::findings::{
     Category, Evaluation, Finding, ValidatorIssue, ValidatorVerdict, truncate_details,
 };
+use crate::harness::ledger::Ledger;
 use crate::harness::prompt;
 use crate::harness::spec::Spec;
 
@@ -98,6 +99,8 @@ pub(crate) struct EvaluationInput<'a> {
     pub(crate) extra_args: &'a [String],
     /// The mirror the validator is told to read.
     pub(crate) mirror_base_url: &'a str,
+    /// Hanvil: what the chain recorded before the browser opened, refusals included.
+    pub(crate) chain_ledger: Option<&'a Ledger>,
     /// Env for the validator process: the network and the signer.
     pub(crate) env: std::collections::BTreeMap<String, String>,
 }
@@ -189,6 +192,7 @@ pub(crate) async fn run(input: EvaluationInput<'_>) -> Evaluation {
         input.signer,
         browser_key,
         input.mirror_base_url,
+        input.chain_ledger,
     ) {
         Ok(prompt) => prompt,
         Err(error) => {

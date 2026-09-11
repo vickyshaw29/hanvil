@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::harness::command::Execution;
+use crate::harness::ledger::Ledger;
 
 /// `types.ts:271-279`, plus `chain` for Hanvil's deterministic chain assertions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -231,6 +232,11 @@ pub(crate) struct ValidationResult {
     /// EVALUATE result, when it ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) evaluation: Option<Evaluation>,
+    /// Hanvil: the chain ledger CHAIN built, carried to the repair and validator prompts. Not
+    /// serialised here — it has its own artifact, `logs/chain-ledger-attempt-N.json`, and one
+    /// copy of the evidence is enough.
+    #[serde(skip)]
+    pub(crate) chain_ledger: Option<Ledger>,
 }
 
 impl ValidationResult {
@@ -248,6 +254,7 @@ impl ValidationResult {
             }],
             command_results: Vec::new(),
             playwright_gate: None,
+            chain_ledger: None,
             evaluation: None,
         }
     }

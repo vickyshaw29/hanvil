@@ -416,8 +416,14 @@ pub(crate) async fn run_loop(input: LoopInput<'_>) -> Result<RunReport, Error> {
                 .filter(|f| f.is_open())
                 .cloned()
                 .collect();
-            latest_prompt =
-                prompt::build_repair_prompt(spec, &open, attempts + 1, Some(context), reverted)?;
+            latest_prompt = prompt::build_repair_prompt(
+                spec,
+                &open,
+                attempts + 1,
+                Some(context),
+                reverted,
+                validation.chain_ledger.as_ref(),
+            )?;
         }
     }
 
@@ -666,7 +672,8 @@ async fn run_validation_stages(
             let findings = chain::run_assertions(&guard, &config.assertions, signer, mark, &ledger);
             (ledger, findings)
         };
-        report_ledger(layout, &ledger, attempt)?;
+        report_ledger(layout, &ledger, attempt, true)?;
+        validation.chain_ledger = Some(ledger);
         layout.append_log(&LogEvent::ChainAssertionsFinished {
             attempt,
             passed: assertion_findings.is_empty(),
@@ -700,6 +707,7 @@ async fn run_validation_stages(
         attempt,
         chain,
         signer,
+        mark,
         context,
         &playwright_path,
         validation,
@@ -718,6 +726,7 @@ async fn run_browser_stages(
     attempt: u64,
     chain: &ChainHandle,
     signer: Option<&Signer>,
+    mark: &chain::Mark,
     context: &VendoredContext,
     playwright_path: &Path,
     mut validation: ValidationResult,
@@ -785,6 +794,10 @@ async fn run_browser_stages(
                 )?),
             ),
         };
+        // Rebuilt here: the app kept working the chain while the browser gate drove it, and
+        // the validator is judging what the app did, not what CHAIN saw.
+        let ledger = Ledger::since(&chain.shared.read(), mark);
+        report_ledger(layout, &ledger, attempt, false)?;
         let evaluation = run_evaluate_stage(
             layout,
             spec,
@@ -796,8 +809,10 @@ async fn run_browser_stages(
             &extra_args,
             &chain.local,
             env.clone(),
+            Some(&ledger),
         )
         .await?;
+        validation.chain_ledger = Some(ledger);
         if let Some(file) = workspace_file {
             file.restore();
         }
@@ -826,6 +841,7 @@ async fn run_evaluate_stage(
     extra_args: &[String],
     local: &LocalChain,
     env: std::collections::BTreeMap<String, String>,
+    ledger: Option<&Ledger>,
 ) -> Result<findings::Evaluation, Error> {
     let prompt_path = layout
         .prompts_directory
@@ -847,6 +863,7 @@ async fn run_evaluate_stage(
         extra_args,
         mirror_base_url: &local.mirror_url,
         env,
+        chain_ledger: ledger,
     })
     .await;
     write_json_file(
@@ -995,23 +1012,31 @@ fn record_attempt_result(
 
 /// Hanvil: the chain ledger for the attempt — every transaction it caused, in consensus order,
 /// including the ones the node refused before consensus and which therefore left no record.
-/// Printed, and written to `logs/chain-ledger-attempt-N.json` beside the state dump.
-fn report_ledger(layout: &Layout, ledger: &Ledger, attempt: u64) -> Result<(), Error> {
+/// Written to `logs/chain-ledger-attempt-N.json` beside the state dump.
+///
+/// Printed once, at CHAIN, because that is the ledger the assertions were evaluated against.
+/// It is rewritten before EVALUATE so the file also holds what the app did while the browser
+/// gate drove it, which is what the validator and the next repair prompt are given.
+fn report_ledger(layout: &Layout, ledger: &Ledger, attempt: u64, print: bool) -> Result<(), Error> {
     if ledger.is_empty() {
-        log_phase(
-            "Chain ledger",
-            Some(&format!(
-                "attempt {attempt} — the attempt sent no transactions"
-            )),
-        );
+        if print {
+            log_phase(
+                "Chain ledger",
+                Some(&format!(
+                    "attempt {attempt} — the attempt sent no transactions"
+                )),
+            );
+        }
         return Ok(());
     }
-    log_phase(
-        "Chain ledger",
-        Some(&format!("attempt {attempt} — {}", ledger.summary())),
-    );
-    for line in ledger.table().lines() {
-        println!("  {line}");
+    if print {
+        log_phase(
+            "Chain ledger",
+            Some(&format!("attempt {attempt} — {}", ledger.summary())),
+        );
+        for line in ledger.table().lines() {
+            println!("  {line}");
+        }
     }
     let path = layout
         .logs_directory

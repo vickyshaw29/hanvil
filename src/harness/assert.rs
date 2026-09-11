@@ -108,6 +108,7 @@ pub(crate) async fn run(
         command_results,
         playwright_gate: None,
         evaluation: None,
+        chain_ledger: None,
     })
 }
 

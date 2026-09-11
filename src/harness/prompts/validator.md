@@ -43,6 +43,13 @@ After executing an executableWithTestSigner flow:
 - Use browser_navigate to the JSON URL or a shell curl from the workspace. Poll up to ~30s for mirror lag.
 - Cite the mirror response (status, relevant fields) in issue evidence when an assertion fails; include it in your reasoning for passes.
 {{/hasSigner}}
+{{#hasChainLedger}}
+
+### Chain ledger (from the node, before you opened the browser)
+{{chainLedger}}
+
+Treat these rows as fact. The mirror endpoints above carry the rows that reached consensus; they carry nothing for a REJECTED row, because a transaction refused before consensus leaves no record anywhere on Hedera. A UI that reported success for a REJECTED row is showing a toast the chain does not support — record that as an issue with the row as evidence.
+{{/hasChainLedger}}
 
 ## Output Requirements
 Output ONLY a single JSON object matching this schema (no prose outside JSON):

@@ -15,6 +15,7 @@ use serde_json::Value;
 use crate::harness::artifacts::{CONTEXT_DIR, SKILLS_DIR};
 use crate::harness::chain::{LocalChain, Signer};
 use crate::harness::findings::{Category, Finding};
+use crate::harness::ledger::Ledger;
 use crate::harness::spec::Spec;
 use crate::harness::{PROJECT_PROMPTS_DIR, PROMPT_TEMPLATE_NAMES};
 
@@ -517,6 +518,7 @@ pub(crate) fn build_repair_prompt(
     attempt: u64,
     context: Option<&VendoredContext>,
     chain_reset: bool,
+    ledger: Option<&Ledger>,
 ) -> Result<String, Error> {
     let mut preamble_vars = Vars::new();
     preamble_vars.insert("chainReset", Var::Flag(chain_reset));
@@ -566,6 +568,14 @@ pub(crate) fn build_repair_prompt(
         Var::Flag(!spec.required_files.is_empty()),
     );
     vars.insert("requiredFiles", text(bullet_list(&spec.required_files)));
+    // Hanvil: the chain the last attempt left, refusals included. `hedera-harness` reads a
+    // mirror node, which carries nothing that was refused before consensus.
+    let ledger = ledger.filter(|ledger| !ledger.is_empty());
+    vars.insert("hasChainLedger", Var::Flag(ledger.is_some()));
+    vars.insert(
+        "chainLedger",
+        text(ledger.map(chain_ledger_section).unwrap_or_default()),
+    );
 
     let body = match scope {
         RepairScope::EvalScoped => render(&spec.project_root, "repair-eval", &vars)?,
@@ -586,6 +596,7 @@ pub(crate) fn build_validator_prompt(
     signer: Option<&Signer>,
     browser_local_storage_key: &str,
     mirror_base_url: &str,
+    ledger: Option<&Ledger>,
 ) -> Result<String, Error> {
     let output_schema = serde_json::json!({
         "passed": true,
@@ -617,6 +628,14 @@ pub(crate) fn build_validator_prompt(
     vars.insert("hasSigner", Var::Flag(signer.is_some()));
     vars.insert("browserKey", text(browser_local_storage_key));
     vars.insert("mirrorBaseUrl", text(mirror_base_url));
+    // Hanvil: the validator judges in a browser, and a browser shows what the app says. The
+    // ledger is what the node says, and it includes the rows no mirror node has.
+    let ledger = ledger.filter(|ledger| !ledger.is_empty());
+    vars.insert("hasChainLedger", Var::Flag(ledger.is_some()));
+    vars.insert(
+        "chainLedger",
+        text(ledger.map(chain_ledger_section).unwrap_or_default()),
+    );
     if let Some(signer) = signer {
         vars.insert("signerAccountId", text(&signer.account_id));
         vars.insert("signerEvmAddress", text(&signer.evm_address));
@@ -627,6 +646,23 @@ pub(crate) fn build_validator_prompt(
 }
 
 /// `promptBuilder.ts:265-267`.
+/// Hanvil: what the last attempt actually put on the chain, as evidence rather than as a
+/// summary. The refused rows are the ones no mirror node has, and they are the reason a
+/// repair usually needs no guessing.
+fn chain_ledger_section(ledger: &Ledger) -> String {
+    let mut section = format!(
+        "Every transaction your last attempt sent, in consensus order ({}):\n\n```\n{}\n```",
+        ledger.summary(),
+        ledger.table()
+    );
+    if ledger.rejected().count() > 0 {
+        section.push_str(
+            "\n\nRows marked REJECTED were refused by the node before consensus. They have no              record, no receipt and no mirror-node entry — the error returned to your client was              the only trace. Fix the cause named in the result column.",
+        );
+    }
+    section
+}
+
 fn bullet_list(values: &[String]) -> String {
     values
         .iter()
@@ -1042,20 +1078,24 @@ mod tests {
             Finding::new("validator-config", Category::EvalInfra, "ignored"),
         ];
         let prompt =
-            build_repair_prompt(&spec, &findings, 2, Some(&context), true).expect("prompt");
+            build_repair_prompt(&spec, &findings, 2, Some(&context), true, None).expect("prompt");
         assert!(prompt.starts_with("You are repairing an in-place extension of an existing application.\nPreserve unrelated working features. Prefer the smallest fix that clears the findings.\nThe local chain was reset"), "{prompt}");
         assert!(prompt.contains("Repair scope: **runtime**"), "{prompt}");
         assert!(prompt.contains("- `.harness/runtime/context/eval.json` — only the failed assertion ids if listed below"), "{prompt}");
         assert!(prompt.contains("## Validation Findings\n- [commands] Validation command failed: lint\n  boom\n- [eval] critical [E1] (/): not loading\n"), "{prompt}");
         assert!(!prompt.contains("ignored"), "{prompt}");
+        assert!(
+            !prompt.contains("## Chain Ledger"),
+            "no ledger, no section: {prompt}"
+        );
         assert!(prompt.contains("### E1\n- route: `/`\n- severity: critical\n- statement: loads\n- howToVerify: open it\n- validator message: critical [E1] (/): not loading\n"), "{prompt}");
         assert!(
             prompt.contains("## Template Metadata Targets\n- template name: demo\n"),
             "{prompt}"
         );
 
-        let eval_only =
-            build_repair_prompt(&spec, &findings[1..2], 3, Some(&context), false).expect("prompt");
+        let eval_only = build_repair_prompt(&spec, &findings[1..2], 3, Some(&context), false, None)
+            .expect("prompt");
         assert!(
             eval_only.contains("Repair scope: **eval-scoped**"),
             "{eval_only}"
@@ -1070,6 +1110,7 @@ mod tests {
             2,
             None,
             false,
+            None,
         )
         .expect("prompt");
         assert!(broad.contains("Repair scope: **broad**"), "{broad}");
@@ -1077,6 +1118,73 @@ mod tests {
             broad.contains("- `.harness-context/prd.md` — product requirements"),
             "{broad}"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Hanvil: the repair prompt carries the chain, refusals included. On `hedera-harness` the
+    /// agent is given a mirror URL, and a mirror node has no row for a refused transaction.
+    #[test]
+    fn the_repair_prompt_carries_the_chain_ledger_and_says_refusals_leave_no_record() {
+        let dir = std::env::temp_dir().join(format!("hanvil-ledger-{}", std::process::id()));
+        let spec = spec_in(&dir, "");
+        let ledger = Ledger {
+            entries: vec![
+                crate::harness::ledger::Entry {
+                    index: 1,
+                    kind: "CONSENSUSSUBMITMESSAGE".into(),
+                    payer: "0.0.1032".into(),
+                    outcome: crate::harness::ledger::Outcome::Success,
+                    result: "SUCCESS".into(),
+                    code: Some(22),
+                    entity: Some("seq 1".into()),
+                    at_millis: 0,
+                    fee_tinybar: 10_000,
+                },
+                crate::harness::ledger::Entry {
+                    index: 2,
+                    kind: "CONSENSUSSUBMITMESSAGE".into(),
+                    payer: "0.0.1032".into(),
+                    outcome: crate::harness::ledger::Outcome::Rejected,
+                    result: "INVALID_SIGNATURE".into(),
+                    code: Some(7),
+                    entity: None,
+                    at_millis: 600,
+                    fee_tinybar: 0,
+                },
+            ],
+        };
+        let findings = vec![
+            Finding::new(
+                "chain:0:topic",
+                Category::Chain,
+                "Chain assertion 0 (topic) failed: topic 0.0.1033 has 1 message(s), fewer than 3",
+            )
+            .with_details("1 CONSENSUSSUBMITMESSAGE submission(s) were refused before consensus"),
+        ];
+        let prompt =
+            build_repair_prompt(&spec, &findings, 2, None, false, Some(&ledger)).expect("prompt");
+
+        assert!(
+            prompt.contains("## Chain Ledger (ground truth, from the node itself)"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("2  CONSENSUSSUBMITMESSAGE  0.0.1032  REJECTED INVALID_SIGNATURE 7"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("no mirror-node entry"),
+            "the agent is told why it cannot look this up: {prompt}"
+        );
+        // The finding keeps the cause as its own detail, so the two agree.
+        assert!(
+            prompt.contains("  1 CONSENSUSSUBMITMESSAGE submission(s) were refused"),
+            "{prompt}"
+        );
+
+        let empty = build_repair_prompt(&spec, &findings, 2, None, false, Some(&Ledger::default()))
+            .expect("prompt");
+        assert!(!empty.contains("## Chain Ledger"), "{empty}");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1099,6 +1207,19 @@ mod tests {
             Some(&signer),
             "burnerWallet.pk",
             "http://127.0.0.1:5551",
+            Some(&Ledger {
+                entries: vec![crate::harness::ledger::Entry {
+                    index: 1,
+                    kind: "CONSENSUSSUBMITMESSAGE".into(),
+                    payer: "0.0.1032".into(),
+                    outcome: crate::harness::ledger::Outcome::Rejected,
+                    result: "INVALID_SIGNATURE".into(),
+                    code: Some(7),
+                    entity: None,
+                    at_millis: 0,
+                    fee_tinybar: 0,
+                }],
+            }),
         )
         .expect("prompt");
         assert!(
@@ -1128,9 +1249,24 @@ mod tests {
             prompt.contains("GET /api/v1/topics/{topicId}"),
             "single braces survive: {prompt}"
         );
-        let without =
-            build_validator_prompt(&spec, "{}", "http://x", None, "k", "http://m").expect("prompt");
+        // The validator is told the mirror cannot corroborate a refusal, because no mirror can.
+        assert!(
+            prompt.contains("### Chain ledger (from the node, before you opened the browser)"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("1  CONSENSUSSUBMITMESSAGE  0.0.1032  REJECTED INVALID_SIGNATURE 7"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("leaves no record anywhere on Hedera"),
+            "{prompt}"
+        );
+
+        let without = build_validator_prompt(&spec, "{}", "http://x", None, "k", "http://m", None)
+            .expect("prompt");
         assert!(!without.contains("Test Signer"), "{without}");
+        assert!(!without.contains("Chain ledger"), "{without}");
         assert!(
             without.contains("do NOT complete on-chain transactions"),
             "{without}"

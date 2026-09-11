@@ -29,6 +29,11 @@ Fix only the validation findings below. Do not redesign unrelated parts of the a
 
 ## Validation Findings
 {{findingsList}}
+{{#hasChainLedger}}
+
+## Chain Ledger (ground truth, from the node itself)
+{{chainLedger}}
+{{/hasChainLedger}}
 {{#hasEvalFindings}}
 
 ## Failed Assertions (detail)

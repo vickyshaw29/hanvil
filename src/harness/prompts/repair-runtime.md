@@ -25,6 +25,11 @@ Do not redesign unrelated features.
 
 ## Validation Findings
 {{findingsList}}
+{{#hasChainLedger}}
+
+## Chain Ledger (ground truth, from the node itself)
+{{chainLedger}}
+{{/hasChainLedger}}
 {{#hasEvalFindings}}
 
 ## Failed Assertions (also fix if listed)
