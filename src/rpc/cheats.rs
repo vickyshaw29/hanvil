@@ -1,18 +1,25 @@
 //! Anvil's cheat methods (`evm_*`, `anvil_*`) and their `hardhat_*` aliases. Return values match
 //! foundry `crates/anvil/src/eth/api.rs` so scripts written for Anvil run unchanged.
+//!
+//! Plus one method of Hanvil's own, under its own prefix: `hanvil_rejections`. It is not an Anvil
+//! method and is not pretending to be one, which is why it is not in the `anvil_` namespace.
 
 use serde_json::{Value, json};
 
 use super::RpcError;
 use super::types::{
-    hash, parse_address, parse_bytes, parse_quantity, parse_u64, quantity_u64, weibar_u64,
+    address as address_hex, hash, parse_address, parse_bytes, parse_quantity, parse_u64,
+    quantity_u64, weibar_u64,
 };
 use crate::evm::units::Tinybar;
 use crate::state::{BLOCK_GAS_LIMIT, Chain, Timestamp};
 
 /// Whether this module answers `method`.
 pub fn handles(method: &str) -> bool {
-    method.starts_with("evm_") || method.starts_with("anvil_") || method.starts_with("hardhat_")
+    method.starts_with("evm_")
+        || method.starts_with("anvil_")
+        || method.starts_with("hardhat_")
+        || method.starts_with("hanvil_")
 }
 
 /// Dispatch one cheat.
@@ -109,6 +116,33 @@ pub fn call(
                 "forkConfig": {},
             }))
         }
+        // Hanvil's own. A transaction refused before consensus leaves no record, no receipt and
+        // no mirror row — on Hedera and here alike — so without this the error returned to the
+        // caller is the only trace it ever existed. Takes an optional cap; the list grows for
+        // the life of the chain, as `hapi_records` does.
+        "hanvil_rejections" => {
+            let limit = match p(0) {
+                None | Some(Value::Null) => usize::MAX,
+                some => parse_u64(some, "limit")? as usize,
+            };
+            let kept: Vec<&crate::state::Rejection> = chain.rejections().collect();
+            let from = kept.len().saturating_sub(limit);
+            Ok(Value::Array(
+                kept[from..]
+                    .iter()
+                    .map(|rejection| {
+                        json!({
+                            "at": rejection.at.to_string(),
+                            "kind": rejection.kind_name(),
+                            "payer": rejection.payer.map(|id| json!(id.to_string())),
+                            "from": rejection.from.map(|address| json!(address_hex(&address))),
+                            "code": rejection.status.map(|status| json!(status.code())),
+                            "reason": rejection.reason(),
+                        })
+                    })
+                    .collect(),
+            ))
+        }
         "evm_setAutomine"
         | "anvil_setAutomine"
         | "evm_setIntervalMining"
@@ -164,4 +198,90 @@ fn mine_params(canonical: &str, params: &[Value]) -> Result<Mine, RpcError> {
         pinned,
         interval: 0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{BodyKind, Genesis, Rejection, Status};
+
+    const NOW: Timestamp = Timestamp {
+        secs: 1_757_000_000,
+        nanos: 6_000_000,
+    };
+
+    fn chain() -> Chain {
+        Chain::genesis(&Genesis {
+            chain_id: 298,
+            accounts_per_type: 1,
+            balance: Tinybar::from_hbar(10_000),
+            gas_price: Tinybar(71),
+            now: NOW,
+        })
+        .expect("genesis")
+    }
+
+    /// The only place a caller can read what the node would not take. Nothing else on any Hedera
+    /// wire carries it.
+    #[test]
+    fn hanvil_rejections_answers_oldest_first_and_honours_a_cap() {
+        let mut chain = chain();
+        assert_eq!(
+            call(&mut chain, NOW, "hanvil_rejections", &[]).expect("empty"),
+            json!([])
+        );
+
+        chain.reject(Rejection {
+            at: NOW,
+            kind: Some(BodyKind::ConsensusSubmitMessage),
+            payer: Some(crate::state::EntityId(1002)),
+            status: Some(Status::InvalidSignature),
+            from: None,
+            message: String::new(),
+        });
+        chain.reject(Rejection {
+            at: NOW,
+            kind: None,
+            payer: None,
+            status: None,
+            from: Some(alloy_primitives::Address::repeat_byte(0xab)),
+            message: "1 weibar is not a multiple of 10^10".to_string(),
+        });
+
+        let all = call(&mut chain, NOW, "hanvil_rejections", &[]).expect("rows");
+        assert_eq!(
+            all,
+            json!([
+                {
+                    "at": "1757000000.006000000",
+                    "kind": "CONSENSUSSUBMITMESSAGE",
+                    "payer": "0.0.1002",
+                    "from": null,
+                    "code": 7,
+                    "reason": "INVALID_SIGNATURE",
+                },
+                {
+                    "at": "1757000000.006000000",
+                    "kind": "UNKNOWN",
+                    "payer": null,
+                    "from": "0xabababababababababababababababababababab",
+                    "code": null,
+                    "reason": "1 weibar is not a multiple of 10^10",
+                },
+            ])
+        );
+
+        // The cap keeps the most recent rows, since those are the ones being debugged.
+        let capped = call(&mut chain, NOW, "hanvil_rejections", &[json!(1)]).expect("capped");
+        assert_eq!(capped.as_array().expect("array").len(), 1);
+        assert_eq!(capped[0]["kind"], "UNKNOWN");
+    }
+
+    /// The prefix is routed, but only the one method exists.
+    #[test]
+    fn another_hanvil_method_is_not_found_rather_than_unrouted() {
+        let error = call(&mut chain(), NOW, "hanvil_nothing", &[]).expect_err("no such method");
+        assert_eq!(error.code, -32601);
+        assert!(handles("hanvil_nothing"), "the prefix is still routed here");
+    }
 }

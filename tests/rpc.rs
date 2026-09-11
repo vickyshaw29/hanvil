@@ -546,3 +546,46 @@ fn net_peer_count_and_submit_work_match_the_relay() {
     assert_eq!(node.result("eth_submitWork", json!([])), json!(false));
     node.shutdown();
 }
+
+/// A send the node will not take leaves no block and no receipt, so the error object is all the
+/// caller gets. `hanvil_rejections` is where it can be read back.
+#[test]
+fn hanvil_rejections_reports_what_no_receipt_records() {
+    let node = Node::boot();
+    let before = node.result("eth_blockNumber", json!([]));
+
+    let refused = node.error(
+        "eth_sendTransaction",
+        json!([{ "from": SENDER, "to": "0x0000000000000000000000000000000000000001",
+                 "value": "0x1" }]),
+    );
+    assert_eq!(refused["code"], json!(-32602));
+    assert_eq!(
+        node.result("eth_blockNumber", json!([])),
+        before,
+        "a refusal mines nothing"
+    );
+
+    let rows = node.result("hanvil_rejections", json!([]));
+    let rows = rows.as_array().expect("array");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["kind"], "ETHEREUMTRANSACTION");
+    assert_eq!(
+        rows[0]["code"],
+        Value::Null,
+        "the relay has no response code"
+    );
+    assert_eq!(
+        rows[0]["from"].as_str().expect("sender").to_lowercase(),
+        SENDER.to_lowercase()
+    );
+    assert!(
+        rows[0]["reason"]
+            .as_str()
+            .expect("reason")
+            .contains("not a multiple of 10^10"),
+        "{}",
+        rows[0]["reason"]
+    );
+    node.shutdown();
+}
