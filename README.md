@@ -6,11 +6,14 @@ on 7546, mirror node REST on 5551, HAPI gRPC on 50211 — from one in-memory cha
 `hiero-local-node` uses. `@hiero-ledger/sdk`, viem, hardhat and foundry connect to it unchanged.
 Unlike the Docker stack it can snapshot the whole chain and put it back.
 
-`hanvil run` is `hedera-harness` ported to Rust and pointed at that chain. It drives a coding
-agent through a recipe — generate, assert, chain, smoke, evaluate — with the network in the same
-process, so every attempt starts on a chain snapshot, a failed attempt is reverted, the recipe
-asserts on accounts, contracts and topics without a mirror round trip, and any attempt's chain
-can be booted again from its state dump. No testnet account, no HBAR, no credentials.
+`hanvil run` drives a coding agent through a `hedera-harness` recipe — generate, assert, chain,
+smoke, evaluate — with the network in the same process. That is not a faster version of the
+TypeScript harness; it is a different amount of truth. Every attempt starts on a chain snapshot
+and a failed one is reverted, the recipe asserts on accounts, contracts and topics with no mirror
+round trip, any attempt's chain boots again from its state dump, and the run reports every
+transaction the app sent — including the ones the node refused, which leave no record, no receipt
+and no mirror row anywhere on Hedera. A harness that reads a mirror node cannot see those. No
+testnet account, no HBAR, no credentials.
 
 ## Measured
 
@@ -109,6 +112,12 @@ over `keccak256(bodyBytes)`, ED25519 over `bodyBytes` — for the payer, for eve
 transfer debits, for the account a delete removes, and for a topic's submit key. `--no-sig-verify`
 turns that off and leaves every other check running. Topic running hashes are SHA-384 over the
 version 3 input list from `transaction_receipt.proto`.
+
+A transaction that fails precheck leaves no record, no receipt and no mirror row, as on Hedera.
+Hanvil additionally keeps it in a list of its own that no endpoint exposes — the wire behaves
+exactly as a node does — and `hanvil run` reads that list for [the chain
+ledger](#the-chain-ledger). `--state` carries it; a state file written before the list existed
+still loads.
 
 Not emulated. Each of these is a deliberate hole, not an oversight:
 
@@ -218,7 +227,7 @@ the ones after it, and a failed attempt's findings become the next attempt's rep
 | --- | --- | --- |
 | 1 GENERATE | the agent CLI — `agent: claude` or `cursor`, or any `generator.command` — with the PRD as its prompt | `logs/generator-attempt-N.log` and `.activity.log` |
 | 2 ASSERT | required and forbidden files, `validators/static.json`, the secret scan, `validators/commands.json` | `logs/validation-attempt-N.json` |
-| 3 CHAIN | `chainValidation.deploy` commands, then `advanceTimeSeconds`, then `assert[]` on the in-process chain | findings `chain:<i>:<kind>` in the same file |
+| 3 CHAIN | `chainValidation.deploy` commands, then `advanceTimeSeconds`, then `assert[]` on the in-process chain | findings `chain:<i>:<kind>` in the same file, and `logs/chain-ledger-attempt-N.json` |
 | 4 SMOKE | the app's dev server, then each route of `validators/playwright-smoke.yaml` in headless Chromium over `@playwright/mcp` | `logs/playwright-gate-attempt-N.json` |
 | 5 EVALUATE | a validator agent with the same Playwright MCP server, judging `eval.json` in the browser | `logs/evaluation-attempt-N.json` |
 
@@ -230,6 +239,61 @@ left it, and `hanvil run --continue <branch>` reloads the last one. Every subpro
 deploy commands, dev server, validator — receives `HANVIL_RPC_URL`, `HANVIL_MIRROR_URL`,
 `HANVIL_GRPC_URL`, `HEDERA_NETWORK=local` and `HARNESS_SIGNER_{ACCOUNT_ID,EVM_ADDRESS,PRIVATE_KEY}`,
 and the generator prompt carries a `## Local Hedera network` section saying the same.
+
+### The chain ledger
+
+CHAIN prints every transaction the attempt sent, in consensus order, and writes the same rows to
+`logs/chain-ledger-attempt-N.json`. The rows that matter are the ones a mirror node does not have.
+
+A transaction refused before consensus — `INVALID_SIGNATURE`, a `value` that is not a whole number
+of tinybar, a payer that cannot cover the fee — leaves no record, no receipt and no mirror row.
+That is how Hedera works: `nodeTransactionPrecheckCode` comes back in `TransactionResponse` and
+nothing is written anywhere. The error returned to the caller is the only trace, so an app that
+catches it and carries on destroys the evidence, and a harness that reads a mirror node sees an
+effect that is missing with no cause. `hedera-harness` reads a mirror node.
+
+Hanvil is the node, so it keeps them. From `tests/harness/.harness/spec-ledger.yaml`, where the
+app sends three transfers and two of them ask to move one weibar:
+
+```
+[hanvil] Stage 3/5 CHAIN
+[hanvil] Chain deploy — seed — bash .harness/seed-ledger.sh
+[hanvil] Chain ledger — attempt 1 — 3 transaction(s), 2 rejected before consensus
+  #  kind                 payer     result                                                            entity  at
+  1  ETHEREUMTRANSACTION  0.0.1002  SUCCESS                                                           —       +0ms
+  2  ETHEREUMTRANSACTION  0.0.1002  REJECTED Invalid params: 1 weibar is not a multiple of 10^10 (1…  —       +6ms
+  3  ETHEREUMTRANSACTION  0.0.1002  REJECTED Invalid params: 1 weibar is not a multiple of 10^10 (1…  —       +12ms
+[hanvil] Chain assertions — 0 of 1 passed
+```
+
+The assertion wanted three transactions and counted one. Without the ledger the finding is that
+count and nothing else. With it the finding carries the cause, and so does the repair prompt:
+
+```json
+{
+  "id": "chain:0:transactions",
+  "category": "chain",
+  "message": "Chain assertion 0 (transactions) failed: 1 successful ETHEREUMTRANSACTION transaction(s) since the attempt began, fewer than 3",
+  "details": "2 ETHEREUMTRANSACTION submission(s) were refused before consensus (Invalid params: 1 weibar is not a multiple of 10^10 (1 tinybar); the relay rejects such values ×2, payer 0.0.1002) — no record exists for them on any Hedera network"
+}
+```
+
+The repair prompt gains a `## Chain Ledger` section with the whole table and one sentence saying
+a `REJECTED` row cannot be looked up anywhere. The validator agent gets the same table before it
+opens the browser, so a UI that toasts success over a refused transaction is an issue rather than
+a pass — upstream's validator prompt calls the mirror node keyless ground truth, and on a refusal
+the mirror node has nothing to say. The table clips a relay message at 56 characters; the JSON
+artifact and the finding keep the sentence. The ledger is rebuilt after SMOKE, because the app
+goes on working the chain while the browser gate drives it.
+
+To reproduce, with the binary built:
+
+```
+cp -R tests/harness /tmp/ledger && cd /tmp/ledger
+git init -q -b main && git add -A && git commit -qm fixture
+hanvil run .harness/spec-ledger.yaml --max-attempts 1 --no-skills
+cat .harness/runs/*/logs/chain-ledger-attempt-1.json
+```
 
 ```
 cp -R examples/hcs-receipts-api /tmp/receipts && cd /tmp/receipts
@@ -311,6 +375,9 @@ Against the TypeScript harness, on the same recipe:
   the lock, 5 µs.
 - `assert[]` in the recipe, evaluated on the chain struct. The TypeScript has no mirror client;
   it hands the validator agent a mirror URL.
+- The chain ledger, including the transactions the node refused. A mirror node has no row for
+  one, so this half of the chain is not reachable from the TypeScript harness at all — not as a
+  missing feature, but because the data is not written on any Hedera network.
 - Replay of any attempt's chain with `--state`.
 - No operator id, no key, no environment variable. `chainValidation` is two lines.
 - An activity log for `claude` as well as `cursor`: the `TOOL START edit /…/lib/hedera.js`

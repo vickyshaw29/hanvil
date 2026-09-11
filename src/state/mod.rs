@@ -1546,8 +1546,37 @@ mod tests {
         );
         assert_eq!(record.status, Status::Success);
 
+        c.reject(Rejection {
+            at: Timestamp::from_secs(1_700_000_006),
+            kind: Some(crate::state::BodyKind::CryptoTransfer),
+            payer: Some(EntityId(1002)),
+            status: Some(Status::InvalidSignature),
+            from: None,
+            message: String::new(),
+        });
+
         let json = c.to_json().expect("a chain with a HAPI record serialises");
         let mut restored = Chain::from_json(&json).expect("and deserialises");
+        assert_eq!(restored.rejections().count(), 1, "refusals survive --state");
+
+        // A state file written before rejections existed still loads.
+        let mut without: serde_json::Value = serde_json::from_str(&json).expect("json");
+        assert!(
+            without
+                .as_object_mut()
+                .expect("object")
+                .remove("rejections")
+                .is_some(),
+            "the field is in the file"
+        );
+        let older = without.to_string();
+        assert_eq!(
+            Chain::from_json(&older)
+                .expect("an older state file loads")
+                .rejections()
+                .count(),
+            0
+        );
         assert!(restored.has_transaction_id(&id));
         assert_eq!(
             restored.hapi_record(&id).map(|r| r.status),
