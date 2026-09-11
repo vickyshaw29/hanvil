@@ -66,6 +66,28 @@ pub(crate) enum Error {
     },
 }
 
+/// How many of the server's last stderr lines an error carries. `npx` failing an install
+/// prints hundreds; the cause is at the end of them.
+const STDERR_TAIL_LINES: usize = 6;
+/// How long to wait for a server that has closed its stdout to actually exit, so the drain task
+/// has the last of its stderr before the error is built.
+const STDERR_FLUSH: Duration = Duration::from_secs(2);
+
+/// The message for a server that closed mid-call, carrying what it printed. Without this the
+/// caller learns the server died and nothing about why, which is the one thing they need.
+fn closed_message(during: &str, stderr: &str) -> String {
+    let said: Vec<&str> = stderr
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    if said.is_empty() {
+        return during.to_string();
+    }
+    let tail = &said[said.len().saturating_sub(STDERR_TAIL_LINES)..];
+    format!("{during}; it printed:\n{}", tail.join("\n"))
+}
+
 /// `mcpBrowser.ts:19-38`: which browser the server drives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BrowserChoice {
@@ -420,6 +442,13 @@ impl Client {
         Ok(client)
     }
 
+    /// The error for a server that closed its end. It has already said why on stderr, so wait
+    /// for it to exit — it has closed stdout, so this returns at once — and quote it.
+    async fn closed(&mut self, during: &str) -> Error {
+        let _ = tokio::time::timeout(STDERR_FLUSH, self.child.wait()).await;
+        Error::Closed(closed_message(during, &self.stderr_text()))
+    }
+
     /// Everything the server wrote to stderr so far.
     pub(crate) fn stderr_text(&self) -> String {
         self.stderr
@@ -456,10 +485,13 @@ impl Client {
             .await?;
         let wait = async {
             loop {
-                let line = match self.lines.next_line().await {
+                let next = self.lines.next_line().await;
+                let line = match next {
                     Ok(Some(line)) => line,
-                    Ok(None) => return Err(Error::Closed(format!(" during {method}"))),
-                    Err(error) => return Err(Error::Closed(format!(" during {method}: {error}"))),
+                    Ok(None) => return Err(self.closed(&format!(" during {method}")).await),
+                    Err(error) => {
+                        return Err(self.closed(&format!(" during {method}: {error}")).await);
+                    }
                 };
                 let Ok(message) = serde_json::from_str::<Value>(&line) else {
                     continue;
@@ -666,6 +698,23 @@ mod tests {
             &json!({"command": "node", "args": [PACKAGE, MARKER]})
         ));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_server_that_died_is_quoted_not_just_reported_dead() {
+        assert_eq!(
+            closed_message(" during initialize", "   \n  "),
+            " during initialize"
+        );
+        let npx = (1..=10)
+            .map(|n| format!("npm error line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let message = closed_message(" during initialize", &npx);
+        assert!(message.starts_with(" during initialize; it printed:\n"));
+        assert!(message.contains("npm error line 5"), "{message}");
+        assert!(message.ends_with("npm error line 10"), "{message}");
+        assert!(!message.contains("npm error line 4"), "{message}");
     }
 
     #[test]

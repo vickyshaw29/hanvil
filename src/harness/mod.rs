@@ -95,12 +95,9 @@ pub(crate) async fn dispatch(command: cli::Command, node: cli::NodeArgs) -> Exit
                 {
                     lines.push(format!("summary={summary}"));
                 }
-                lines.extend(
-                    evaluation
-                        .findings
-                        .iter()
-                        .map(|f| format!("- [{}] {}", f.category.as_str(), f.message)),
-                );
+                lines.extend(evaluation.findings.iter().flat_map(|f| {
+                    f.console_lines(format!("- [{}] {}", f.category.as_str(), f.message))
+                }));
                 println!("{}", lines.join("\n"));
                 if evaluation.passed {
                     ExitCode::SUCCESS
@@ -132,7 +129,7 @@ pub(crate) async fn dispatch(command: cli::Command, node: cli::NodeArgs) -> Exit
                     validation
                         .findings
                         .iter()
-                        .map(|f| format!("- {}", f.message)),
+                        .flat_map(|f| f.console_lines(format!("- {}", f.message))),
                 );
                 lines.extend(validation.command_results.iter().map(|r| {
                     format!(

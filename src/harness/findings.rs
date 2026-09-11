@@ -107,6 +107,23 @@ impl Finding {
         self
     }
 
+    /// The console form: `heading`, then the details indented under it. A finding whose cause
+    /// is only in its details — a browser gate that failed before its first route says nothing
+    /// else — otherwise reaches the caller as "it failed" with nowhere to look.
+    pub(crate) fn console_lines(&self, heading: String) -> Vec<String> {
+        let mut lines = vec![heading];
+        if let Some(details) = self.details.as_deref() {
+            let rendered = truncate_details(details);
+            lines.extend(
+                rendered
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .map(|line| format!("    {}", line.trim_end())),
+            );
+        }
+        lines
+    }
+
     /// Not carried forward as `fixed`.
     pub(crate) fn is_open(&self) -> bool {
         self.status != Some(Status::Fixed)
@@ -418,6 +435,25 @@ mod tests {
         let not_run = ValidationResult::not_run_yet();
         assert!(!not_run.passed);
         assert_eq!(not_run.findings[0].id, "generator-not-run");
+    }
+
+    #[test]
+    fn a_findings_cause_is_printed_under_it() {
+        let bare = Finding::new("playwright:gate", Category::Playwright, "gate failed");
+        assert_eq!(
+            bare.console_lines("- gate failed".into()),
+            vec!["- gate failed"]
+        );
+        let with_cause = Finding::new("playwright:gate", Category::Playwright, "gate failed")
+            .with_details("the server closed the connection\n\nnpm error ENOTEMPTY");
+        assert_eq!(
+            with_cause.console_lines("- gate failed".into()),
+            vec![
+                "- gate failed",
+                "    the server closed the connection",
+                "    npm error ENOTEMPTY",
+            ]
+        );
     }
 
     #[test]
