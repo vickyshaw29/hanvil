@@ -39,6 +39,7 @@ use crate::harness::session::{self, log_phase};
 use crate::harness::smoke;
 use crate::harness::spec::McpDelivery;
 use crate::harness::spec::Spec;
+use crate::harness::watcher::{ChangeSink, WorkspaceWatcher};
 use crate::serve::Shared;
 
 /// `attemptStages.ts:38`, plus CHAIN.
@@ -537,6 +538,28 @@ fn announce_attempt(
 }
 
 /// `attemptStages.ts:69-173`: a non-zero exit becomes a finding rather than an error, so the
+/// `attemptStages.ts:83-100`. Written from the agent's stream and from the workspace watcher,
+/// so `status.json` says what changed most recently whichever of the two saw it.
+fn write_generator_status(
+    layout: &Layout,
+    attempt: u64,
+    started: Instant,
+    activity_path: &Path,
+    progress: &Progress,
+) {
+    let _ = layout.write_status(json!({
+        "phase": "generator_running",
+        "stage": "GENERATE",
+        "attempt": attempt,
+        "elapsedSeconds": started.elapsed().as_secs(),
+        "lastActivity": progress.last_activity,
+        "toolCallsStarted": progress.tool_calls_started,
+        "toolCallsCompleted": progress.tool_calls_completed,
+        "sessionId": progress.session_id,
+        "activityLogPath": activity_path,
+    }));
+}
+
 /// attempt still runs ASSERT and reports deterministic context alongside the agent failure.
 #[allow(clippy::too_many_arguments)]
 async fn run_generate_stage(
@@ -556,21 +579,38 @@ async fn run_generate_stage(
     let activity_path = layout
         .logs_directory
         .join(format!("generator-attempt-{attempt}.activity.log"));
-    let status_layout = layout.clone();
-    let activity_for_status = activity_path.clone();
-    let on_progress: agent::ProgressSink = Arc::new(move |progress: &Progress| {
-        let _ = status_layout.write_status(json!({
-            "phase": "generator_running",
-            "stage": "GENERATE",
-            "attempt": attempt,
-            "elapsedSeconds": started.elapsed().as_secs(),
-            "lastActivity": progress.last_activity,
-            "toolCallsStarted": progress.tool_calls_started,
-            "toolCallsCompleted": progress.tool_calls_completed,
-            "sessionId": progress.session_id,
-            "activityLogPath": activity_for_status,
-        }));
+    let workspace_activity_path = layout
+        .logs_directory
+        .join(format!("workspace-attempt-{attempt}.activity.log"));
+
+    // `attemptStages.ts:92-110`: the agent's stream and the workspace watcher write to one
+    // progress record. The agent owns the counters; the watcher only moves `lastActivity`.
+    let latest = Arc::new(std::sync::Mutex::new(Progress::default()));
+    let on_progress: agent::ProgressSink = Arc::new({
+        let latest = Arc::clone(&latest);
+        let layout = layout.clone();
+        let activity_path = activity_path.clone();
+        move |progress: &Progress| {
+            let mut guard = latest
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.clone_from(progress);
+            write_generator_status(&layout, attempt, started, &activity_path, &guard);
+        }
     });
+    let on_change: ChangeSink = Arc::new({
+        let latest = Arc::clone(&latest);
+        let layout = layout.clone();
+        let activity_path = activity_path.clone();
+        move |summary: &str| {
+            let mut guard = latest
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            summary.clone_into(&mut guard.last_activity);
+            write_generator_status(&layout, attempt, started, &activity_path, &guard);
+        }
+    });
+    let watcher = WorkspaceWatcher::start(workspace, &workspace_activity_path, Some(on_change))?;
 
     // The agent sees the network and the signer through the environment (upstream: a URL in
     // the prompt, nothing else).
@@ -607,6 +647,7 @@ async fn run_generate_stage(
             signal: None,
         },
     };
+    watcher.stop().await;
     layout.append_log(&LogEvent::GeneratorFinished {
         attempt,
         exit_code: result.exit_code,

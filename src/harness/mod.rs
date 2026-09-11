@@ -29,6 +29,7 @@ pub(crate) mod session;
 pub(crate) mod skills;
 pub(crate) mod smoke;
 pub(crate) mod spec;
+pub(crate) mod watcher;
 
 /// `promptTemplates.ts:13-21`.
 pub(crate) const PROMPT_TEMPLATE_NAMES: [&str; 7] = [

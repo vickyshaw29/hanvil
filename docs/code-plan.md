@@ -405,7 +405,20 @@ prompts, artifact layout, git behaviour, console lines — is copied from the Ty
 cited by `file:line` in the code. Documented deviations: the `claude` preset's idle timeout is
 600 s (a `Bash` tool call is silent until it returns); `CLAUDECODE`/`CLAUDE_CODE_*` are stripped
 from the agent's env; a dev server that never prints `Local:` is accepted if `server.url` answers;
-`@playwright/mcp` is pinned at 0.0.80 and spoken to over stdio by the harness itself for SMOKE.
+`@playwright/mcp` is pinned at 0.0.80 and spoken to over stdio by the harness itself for SMOKE;
+`workspaceWatcher.ts` is ported as a poller (`src/harness/watcher.rs`), not as `fs.watch`.
+
+`logs/workspace-attempt-N.activity.log` carries the same header, the same `FILE <path>` lines
+with an ISO-8601 stamp, the same ignore set (`node_modules`, `.next`, `.git`, `dist`, `artifacts`,
+`cache`, `.harness`, `.harness-skills`, `.harness-context`, `.skill-cache`), the same console
+gating — the first twenty changes and every twenty-fifth after — and the same
+`WATCHER stopped totalChanges=N` trailer. Node watches the tree with a recursive `fs.watch`;
+this walks it every 500 ms, because `notify` is CC0-1.0 against §4's MIT/Apache-2.0/BSD set and
+a dependency is a lot to carry for one log file. The cost is that a file created and deleted
+between two walks is never seen. `stop` walks once more before it writes the trailer, so the
+poll interval decides when a change is reported, not whether it is. The agent's stream and the
+watcher share one progress record, as `attemptStages.ts:92-110` does, so `status.json`'s
+`lastActivity` is whichever of the two moved last and the tool-call counters stay the agent's.
 
 Subprocesses are spawned in their own process group and stopped with `pkill -TERM -g` then
 `pkill -KILL -g`; both pipes are drained from the first byte; Ctrl-C kills every live group and

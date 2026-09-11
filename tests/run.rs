@@ -211,6 +211,7 @@ fn the_fixture_passes_in_one_attempt_with_the_signer_swept_and_the_chain_dumped(
         "prompts/generator-attempt-1.txt",
         "logs/generator-attempt-1.log",
         "logs/generator-attempt-1.activity.log",
+        "logs/workspace-attempt-1.activity.log",
         "logs/validation-attempt-1.json",
         "logs/chain-state-attempt-1.json",
         "reports/report.json",
@@ -224,6 +225,34 @@ fn the_fixture_passes_in_one_attempt_with_the_signer_swept_and_the_chain_dumped(
     assert!(
         !run_dir.join("chain-signer.json").exists(),
         "the signer file is removed by the sweep"
+    );
+    // `workspaceWatcher.ts`: the file the generator wrote is named, and the watcher says how
+    // many it saw. The fixture generator writes exactly one.
+    let workspace_activity =
+        std::fs::read_to_string(run_dir.join("logs/workspace-attempt-1.activity.log"))
+            .expect("workspace activity log");
+    assert!(
+        workspace_activity.starts_with("# workspace activity log\n"),
+        "{workspace_activity}"
+    );
+    assert!(
+        workspace_activity.contains(" FILE generated.txt\n"),
+        "{workspace_activity}"
+    );
+    let total = workspace_activity
+        .trim_end()
+        .rsplit_once("WATCHER stopped totalChanges=")
+        .map(|(_, count)| count.to_string());
+    // Not pinned to 1: a poll that lands mid-write counts the empty file and the written one.
+    assert!(
+        total
+            .as_deref()
+            .is_some_and(|count| count.parse::<u64>().is_ok_and(|count| count >= 1)),
+        "{workspace_activity}"
+    );
+    assert!(
+        stdout.contains("[hanvil:workspace] FILE generated.txt"),
+        "missing the workspace console line in:\n{stdout}"
     );
     let report: Value = serde_json::from_str(
         &std::fs::read_to_string(run_dir.join("reports/report.json")).expect("report"),

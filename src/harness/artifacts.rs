@@ -257,6 +257,20 @@ pub(crate) fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<()
     std::fs::write(path, format!("{json}\n")).map_err(io_error("writing", path))
 }
 
+/// Create or truncate a log artifact, write `header`, and hand back the handle for appending.
+pub(crate) fn create_log(path: &Path, header: &str) -> Result<std::fs::File, Error> {
+    use std::io::Write as _;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(io_error("writing", path))?;
+    file.write_all(header.as_bytes())
+        .map_err(io_error("writing", path))?;
+    Ok(file)
+}
+
 fn append_text(path: &Path, text: &str) -> Result<(), Error> {
     use std::io::Write as _;
     let mut file = std::fs::OpenOptions::new()

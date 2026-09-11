@@ -504,12 +504,15 @@ Against the TypeScript harness, on the same recipe:
 - No `npm install` for the harness. Node is needed by the app under test and by
   `@playwright/mcp`, not by `hanvil`.
 
-Five deviations from the TypeScript, each recorded in `docs/code-plan.md` §16: the `claude`
+Six deviations from the TypeScript, each recorded in `docs/code-plan.md` §16: the `claude`
 preset's idle timeout is 600 s, not 90 s (a `Bash` tool call is silent until it returns);
 `CLAUDECODE` and `CLAUDE_CODE_*` are stripped from the agent's environment; a dev server that
 never prints `Local:` is accepted when `server.url` answers; `@playwright/mcp` is pinned at
 0.0.80 and driven over stdio by the harness itself for SMOKE; after a revert the repair prompt
-gains one sentence saying the chain was reset.
+gains one sentence saying the chain was reset; the workspace activity log
+(`logs/workspace-attempt-N.activity.log`, upstream's `workspaceWatcher.ts`) is filled by walking
+the tree every 500 ms rather than by `fs.watch`, so a file created and deleted between two walks
+is missed — the walk runs once more when the agent stops, so anything still on disk is recorded.
 
 ```
 hanvil run [SPEC] [--max-attempts N] [--new | --continue BRANCH] [--workspace DIR] [--no-skills]
