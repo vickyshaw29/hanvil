@@ -794,6 +794,62 @@ fn a_phase_moves_the_clock_a_week_before_its_commands_run() {
     let _ = std::fs::remove_dir_all(repo);
 }
 
+/// The ledger is rebuilt before every phase's assertions, not once after the last one.
+///
+/// The flat block asserts nothing has been refused; the phase then causes two refusals and
+/// tolerates them. Built once at the end, the flat assertion would see the phase's refusals and
+/// the run would fail. It passes, and the final ledger carries both refusals, so the two
+/// assertion sets were evaluated against different ledgers.
+#[test]
+fn a_phase_s_refusals_are_not_visible_to_the_assertions_that_ran_before_it() {
+    let repo = fixture_repo("phase-isolation");
+    let (ok, stdout, stderr) = run(
+        &[".harness/spec-phase-isolation.yaml", "--max-attempts", "1"],
+        &repo,
+    );
+    assert!(ok, "stdout:\n{stdout}\nstderr:\n{stderr}");
+
+    // Two ledgers, printed one per assertion set. Built once after the last phase, these two
+    // lines would be identical and the flat assertion would have failed.
+    assert!(
+        stdout.contains("[hanvil] Chain ledger — attempt 1 — the attempt sent no transactions"),
+        "the flat block's ledger is empty:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "[hanvil] Chain ledger — attempt 1 — 3 transaction(s), 2 rejected before consensus"
+        ),
+        "the phase's ledger carries its own refusals:\n{stdout}"
+    );
+
+    let flat = stdout
+        .find("[hanvil] Chain assertions — 1 of 1 passed\n")
+        .expect("the flat block passed");
+    let phase = stdout
+        .find("[hanvil] Chain phase — refusals")
+        .expect("the phase ran");
+    assert!(flat < phase, "the flat block is evaluated first:\n{stdout}");
+    assert!(
+        stdout.contains("[hanvil] Chain assertions — 1 of 1 passed — phase refusals"),
+        "{stdout}"
+    );
+
+    // The refusals the flat assertion did not see are on the chain by the end.
+    let ledger: Value = serde_json::from_str(
+        &std::fs::read_to_string(run_directory(&repo).join("logs/chain-ledger-attempt-1.json"))
+            .expect("ledger"),
+    )
+    .expect("json");
+    let rejected = ledger["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .filter(|e| e["outcome"] == "rejected")
+        .count();
+    assert_eq!(rejected, 2, "the phase's refusals are in the final ledger");
+    let _ = std::fs::remove_dir_all(repo);
+}
+
 /// Without the phase's advance the same sweep reverts, which is what makes the test above proof
 /// rather than assertion.
 #[test]

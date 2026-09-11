@@ -1096,11 +1096,7 @@ fn read_baseline(parsed: &Map<String, Value>) -> Result<Option<Vec<CommandSpec>>
                         "Expected string or object at baseline.commands[{index}]."
                     )));
                 };
-                Ok(CommandSpec {
-                    name: read_optional_string(cmd, "name"),
-                    command: read_string(cmd, "command")?,
-                    timeout_ms: read_optional_number(cmd, "timeoutMs").map(|n| n as u64),
-                })
+                read_command_spec(cmd, false)
             }
         })
         .collect::<Result<Vec<_>, Error>>()
@@ -1263,6 +1259,21 @@ fn read_chain_assertions_at(raw: &Value, owner: &str) -> Result<Vec<ChainAsserti
         .collect()
 }
 
+/// The `{ name, command, timeoutMs }` triple, read the same way wherever it appears. `name` is
+/// required for a deploy command and optional for a baseline one, which is the whole of the
+/// difference between the two call sites.
+fn read_command_spec(cmd: &Map<String, Value>, name_required: bool) -> Result<CommandSpec, Error> {
+    Ok(CommandSpec {
+        name: if name_required {
+            Some(read_string(cmd, "name")?)
+        } else {
+            read_optional_string(cmd, "name")
+        },
+        command: read_string(cmd, "command")?,
+        timeout_ms: read_optional_number(cmd, "timeoutMs").map(|n| n as u64),
+    })
+}
+
 /// `deploy.commands` of `chainValidation` or of one `phases[]` entry. `at` is the path of the
 /// owning block, so the error names the right one.
 fn read_deploy_commands(record: &Map<String, Value>, at: &str) -> Result<Vec<CommandSpec>, Error> {
@@ -1283,11 +1294,7 @@ fn read_deploy_commands(record: &Map<String, Value>, at: &str) -> Result<Vec<Com
                     "Expected object at {at}.deploy.commands[{index}]."
                 )));
             };
-            Ok(CommandSpec {
-                name: Some(read_string(cmd, "name")?),
-                command: read_string(cmd, "command")?,
-                timeout_ms: read_optional_number(cmd, "timeoutMs").map(|n| n as u64),
-            })
+            read_command_spec(cmd, true)
         })
         .collect()
 }

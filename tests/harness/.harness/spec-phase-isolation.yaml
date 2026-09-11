@@ -1,0 +1,34 @@
+# The ledger is rebuilt before every phase's assertions, not once at the end. The flat block
+# asserts that nothing has been refused; the phase then causes two refusals and tolerates them.
+# Built once after the last phase, the flat assertion would see the phase's refusals and the run
+# would fail. It passes, so it does not.
+schemaVersion: 3
+name: phase-isolation-on-hanvil
+prd: .harness/prd.md
+generator:
+  provider: command
+  command: bash
+  args:
+    - -c
+    - "printf 'ok\\n' > generated.txt"
+requiredFiles:
+  - generated.txt
+chainValidation:
+  enabled: true
+  network: local
+  fundingHbar: 10
+  assert:
+    - rejections: { atMost: 0 }
+  phases:
+    - name: refusals
+      deploy:
+        commands:
+          - name: seed
+            command: bash .harness/seed-ledger.sh
+            timeoutMs: 30000
+      assert:
+        - rejections: { atMost: 2 }
+baseline:
+  commands:
+    - name: install
+      command: "true"
