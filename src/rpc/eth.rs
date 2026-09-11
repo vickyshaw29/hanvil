@@ -218,33 +218,44 @@ pub fn call(
             }
             Ok(json!(quantity_u64(chain.estimate_gas(&request, now)?)))
         }
+        // Both send paths are wrapped rather than using `?`, so a submission refused while its
+        // params are still being read — a `value` that is not a whole tinybar is the common one
+        // — is kept alongside the ones refused by the chain. To the caller they are the same
+        // thing: a transaction that did not happen and left nothing behind.
         "eth_sendRawTransaction" => {
-            let raw = parse_bytes(p(0), "transaction")?;
-            let sender = crate::evm::decode_signed(&raw).ok().map(|tx| tx.from);
-            match chain.send_raw(raw, now) {
-                Ok(mined) => Ok(json!(hash(&mined))),
-                Err(error) => Err(refused(chain, sender, error, now)),
-            }
+            let sender = parse_bytes(p(0), "transaction")
+                .ok()
+                .and_then(|raw| evm::decode_signed(&raw).ok())
+                .map(|decoded| decoded.from);
+            let outcome = (|| {
+                let raw = parse_bytes(p(0), "transaction")?;
+                Ok(json!(hash(&chain.send_raw(raw, now)?)))
+            })();
+            outcome.map_err(|error| refused(chain, sender, error, now))
         }
         "eth_sendTransaction" => {
-            let request = parse_call(p(0))?;
-            let from = request
-                .from
-                .ok_or_else(|| RpcError::invalid_params("eth_sendTransaction needs `from`"))?;
-            let nonce = parse_optional_nonce(p(0))?.unwrap_or_else(|| chain.nonce_by_evm(&from));
-            let tx = UnsignedTx {
-                from,
-                to: request.to,
-                nonce,
-                gas_limit: request.gas.unwrap_or(BLOCK_GAS_LIMIT / 2),
-                gas_price: request.gas_price.unwrap_or(chain.gas_price().0),
-                value: request.value,
-                input: request.input,
-            };
-            match chain.send_unsigned(tx, now) {
-                Ok(mined) => Ok(json!(hash(&mined))),
-                Err(error) => Err(refused(chain, Some(from), error, now)),
-            }
+            let sender = p(0)
+                .and_then(|call| call.get("from"))
+                .and_then(|from| parse_address(Some(from)).ok());
+            let outcome = (|| {
+                let request = parse_call(p(0))?;
+                let from = request
+                    .from
+                    .ok_or_else(|| RpcError::invalid_params("eth_sendTransaction needs `from`"))?;
+                let nonce =
+                    parse_optional_nonce(p(0))?.unwrap_or_else(|| chain.nonce_by_evm(&from));
+                let tx = UnsignedTx {
+                    from,
+                    to: request.to,
+                    nonce,
+                    gas_limit: request.gas.unwrap_or(BLOCK_GAS_LIMIT / 2),
+                    gas_price: request.gas_price.unwrap_or(chain.gas_price().0),
+                    value: request.value,
+                    input: request.input,
+                };
+                Ok(json!(hash(&chain.send_unsigned(tx, now)?)))
+            })();
+            outcome.map_err(|error| refused(chain, sender, error, now))
         }
         other => Err(RpcError::method_not_found(other)),
     }
@@ -259,21 +270,20 @@ pub fn call(
 fn refused(
     chain: &mut Chain,
     sender: Option<Address>,
-    error: crate::state::Error,
+    error: RpcError,
     now: Timestamp,
 ) -> RpcError {
-    let rendered = RpcError::from(error);
     chain.reject(Rejection {
         at: now,
         kind: Some(BodyKind::EthereumTransaction),
         payer: sender
             .and_then(|address| chain.account_by_evm(&address))
-            .map(|a| a.id),
+            .map(|account| account.id),
         status: None,
         from: sender,
-        message: rendered.message.clone(),
+        message: error.message.clone(),
     });
-    rendered
+    error
 }
 
 /// Hanvil keeps only the head state. A historical block tag is refused rather than silently
@@ -342,5 +352,106 @@ impl RpcError {
             ExecutionResult::Halt { reason, .. } => Self::server(format!("{reason:?}")),
             ExecutionResult::Success { .. } => Self::server("unexpected success"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::evm::units::Tinybar;
+    use crate::state::Genesis;
+
+    const NOW: Timestamp = Timestamp {
+        secs: 1_757_000_000,
+        nanos: 0,
+    };
+
+    fn chain() -> Chain {
+        Chain::genesis(&Genesis {
+            chain_id: 298,
+            accounts_per_type: 1,
+            balance: Tinybar::from_hbar(10_000),
+            gas_price: Tinybar(71),
+            now: NOW,
+        })
+        .expect("genesis")
+    }
+
+    /// A send the node will not take mines no block and leaves no receipt, so the error object
+    /// is the only thing the caller gets. The chain keeps it either way.
+    #[test]
+    fn a_send_the_node_refuses_is_kept_whether_it_failed_at_parse_or_at_execution() {
+        let mut chain = chain();
+        let sender = chain
+            .accounts()
+            .find(|account| account.id.0 == 1002)
+            .map(crate::state::Account::evm_address)
+            .expect("a predefined account");
+
+        // Refused while the params are read: one weibar is not a whole tinybar.
+        let dust = call(
+            &mut chain,
+            NOW,
+            "eth_sendTransaction",
+            &[
+                json!({"from": sender, "to": "0x0000000000000000000000000000000000000001",
+                     "value": "0x1"}),
+            ],
+        )
+        .expect_err("not a whole tinybar");
+        assert_eq!(dust.code, -32602);
+
+        // Refused by the chain: no key for that address and no impersonation.
+        call(
+            &mut chain,
+            NOW,
+            "eth_sendTransaction",
+            &[json!({"from": "0x000000000000000000000000000000000000dEaD",
+                     "to": "0x0000000000000000000000000000000000000001", "value": "0x0"})],
+        )
+        .expect_err("not impersonated");
+
+        assert_eq!(chain.block_number(), 0, "neither one mined a block");
+        let kept: Vec<_> = chain.rejections().collect();
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].kind_name(), "ETHEREUMTRANSACTION");
+        assert_eq!(kept[0].from, Some(sender));
+        assert!(
+            kept[0].reason().contains("not a multiple of 10^10"),
+            "{}",
+            kept[0].reason()
+        );
+        assert_eq!(kept[0].status, None, "the relay has no ResponseCodeEnum");
+        assert!(
+            kept[1].reason().contains("neither a predefined account"),
+            "{}",
+            kept[1].reason()
+        );
+        assert_eq!(kept[1].payer, None, "0x…dEaD has no Hedera account");
+    }
+
+    /// A transaction that reverts is not a refusal: it mined, it was charged, and the receipt
+    /// is there to read.
+    #[test]
+    fn a_revert_is_not_a_rejection() {
+        let mut chain = chain();
+        let sender = chain
+            .accounts()
+            .find(|account| account.id.0 == 1002)
+            .map(crate::state::Account::evm_address)
+            .expect("a predefined account");
+        // Deploy nothing useful, then call the HTS address, which genesis etched to revert.
+        call(
+            &mut chain,
+            NOW,
+            "eth_sendTransaction",
+            &[
+                json!({"from": sender, "to": "0x0000000000000000000000000000000000000167",
+                     "data": "0x00000000"}),
+            ],
+        )
+        .expect("it mines");
+        assert_eq!(chain.block_number(), 1);
+        assert_eq!(chain.rejections().count(), 0);
     }
 }
