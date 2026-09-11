@@ -368,6 +368,12 @@ impl Chain {
             .copied()
     }
 
+    /// Every contract, oldest first. The last is the newest the chain has, which is what a
+    /// recipe means by `contract: created`.
+    pub fn contracts(&self) -> impl DoubleEndedIterator<Item = &Contract> {
+        self.contracts.values()
+    }
+
     /// Contract metadata by entity id.
     pub fn contract(&self, id: EntityId) -> Option<&Contract> {
         self.contracts.get(&id)

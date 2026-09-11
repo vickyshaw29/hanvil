@@ -15,7 +15,7 @@ use crate::evm::units::Tinybar;
 use crate::harness::artifacts::now_iso8601;
 use crate::harness::findings::{Category, Finding};
 use crate::harness::ledger::Ledger;
-use crate::harness::spec::{AccountRef, ChainAssertion, ChainValidation, TopicRef};
+use crate::harness::spec::{AccountRef, ChainAssertion, ChainValidation, ContractRef, TopicRef};
 use crate::state::hapi::{Body, Digest384, Status, Transaction, TxId};
 use crate::state::{Chain, EntityId, FIRST_USER_ID, HAPI_FEE, Timestamp};
 
@@ -467,17 +467,19 @@ pub(crate) fn run_assertions(
                 exists,
                 deleted,
             } => check_account(chain, account, signer, *min_balance_hbar, *exists, *deleted),
-            ChainAssertion::Contract { address, deployed } => {
-                let has_code = address
-                    .parse::<Address>()
-                    .ok()
-                    .is_some_and(|address| !chain.code_by_evm(&address).is_empty());
-                match (deployed, has_code) {
-                    (true, false) => Some(format!("no contract code at {address}")),
-                    (false, true) => Some(format!("contract code is present at {address}")),
-                    _ => None,
-                }
-            }
+            ChainAssertion::Contract {
+                contract,
+                deployed,
+                event,
+                at_least,
+            } => check_contract(
+                chain,
+                contract,
+                *deployed,
+                event.as_deref(),
+                *at_least,
+                since,
+            ),
             ChainAssertion::Topic {
                 topic,
                 messages_at_least,
@@ -632,6 +634,49 @@ fn check_transactions(
         ));
     }
     None
+}
+
+/// Code at an address, and the events it emitted since the attempt's snapshot.
+///
+/// `contract: created` resolves to the newest contract the chain holds, so a recipe can assert on
+/// a deployment whose address it never sees — the same way `topic: created` already works.
+fn check_contract(
+    chain: &Chain,
+    which: &ContractRef,
+    deployed: bool,
+    event: Option<&str>,
+    at_least: u64,
+    since: &Mark,
+) -> Option<String> {
+    let (label, address) = match which {
+        ContractRef::Created => match chain.contracts().next_back() {
+            Some(contract) => (contract.address.to_string(), Some(contract.address)),
+            None => return Some("no contract exists on the chain".to_string()),
+        },
+        ContractRef::Address(address) => (address.clone(), address.parse::<Address>().ok()),
+    };
+    let has_code = address.is_some_and(|address| !chain.code_by_evm(&address).is_empty());
+    match (deployed, has_code) {
+        (true, false) => return Some(format!("no contract code at {label}")),
+        (false, true) => return Some(format!("contract code is present at {label}")),
+        _ => {}
+    }
+    let (Some(signature), Some(address)) = (event, address) else {
+        return None;
+    };
+    // Validated at load, so a signature that does not hash here is a bug, not a recipe error.
+    let topic = crate::evm::event_topic(signature)?;
+    let count = chain
+        .logs(&crate::state::LogFilter {
+            from_block: since.blocks as u64,
+            to_block: chain.block_number(),
+            addresses: vec![address],
+            topics: vec![Some(vec![topic])],
+        })
+        .len() as u64;
+    (count < at_least).then(|| {
+        format!("{label} emitted {signature} {count} time(s) since the attempt began, fewer than {at_least}")
+    })
 }
 
 /// Refusals since the attempt's snapshot, read off the ledger rather than the chain: a refused
@@ -891,6 +936,114 @@ mod tests {
         assert_eq!(none_since.len(), 1);
         assert_eq!(snapshot_id(26), "0x1a");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `contract: created` needs no address, and the event count is read off the logs the
+    /// attempt's own blocks carry.
+    #[test]
+    fn a_contract_assertion_finds_the_newest_deployment_and_counts_its_events() {
+        use crate::state::UnsignedTx;
+
+        let mut chain = genesis_chain();
+        let now = Timestamp::from_secs(1_700_000_300);
+        let sender = chain
+            .accounts()
+            .find(|account| account.id == OPERATOR)
+            .map(crate::state::Account::evm_address)
+            .expect("the operator");
+        let mark = Mark::of(&chain);
+
+        let fixture: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/Counter.json"
+            ))
+            .expect("fixture"),
+        )
+        .expect("json");
+        let init_code = hex_bytes(fixture["bytecode"].as_str().expect("bytecode"));
+
+        let deploy =
+            |chain: &mut Chain, to: Option<Address>, input: Vec<u8>, nonce: u64, at: Timestamp| {
+                chain
+                    .send_unsigned(
+                        UnsignedTx {
+                            from: sender,
+                            to,
+                            nonce,
+                            gas_limit: 3_000_000,
+                            gas_price: 71,
+                            value: 0,
+                            input: input.into(),
+                        },
+                        at,
+                    )
+                    .expect("mined")
+            };
+        let hash = deploy(&mut chain, None, init_code, 0, now);
+        let deployed = chain
+            .transaction(&hash)
+            .and_then(|tx| tx.receipt.contract_address)
+            .expect("an address");
+
+        // increment() twice: two Incremented logs.
+        let increment = hex_bytes("0xd09de08a");
+        deploy(
+            &mut chain,
+            Some(deployed),
+            increment.clone(),
+            1,
+            now.next_nano(),
+        );
+        deploy(&mut chain, Some(deployed), increment, 2, now.next_nano());
+
+        let assertions = config(
+            "  assert:\n    - contract: created\n      event: \"Incremented(address,uint256)\"\n      atLeast: 2\n    - contract: created\n      event: \"Incremented(address,uint256)\"\n      atLeast: 3\n    - contract: created\n      event: \"Paused()\"\n",
+        )
+        .assertions;
+        let findings = run_assertions(
+            &chain,
+            &assertions,
+            None,
+            &mark,
+            &Ledger::since(&chain, &mark),
+        );
+
+        // 0 passes; 1 wanted three; 2 wanted an event the contract never emits.
+        let ids: Vec<&str> = findings.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(ids, ["chain:1:contract", "chain:2:contract"]);
+        assert!(
+            findings[0].message.contains(&format!(
+                "{deployed} emitted Incremented(address,uint256) 2 time(s) since the attempt began, fewer than 3"
+            )),
+            "{}",
+            findings[0].message
+        );
+
+        // A chain with no contract says so rather than counting zero events.
+        let empty = genesis_chain();
+        let empty_mark = Mark::of(&empty);
+        let none = run_assertions(
+            &empty,
+            &assertions,
+            None,
+            &empty_mark,
+            &Ledger::since(&empty, &empty_mark),
+        );
+        assert_eq!(none.len(), 3);
+        assert!(
+            none[0].message.ends_with("no contract exists on the chain"),
+            "{}",
+            none[0].message
+        );
+    }
+
+    fn hex_bytes(hex: &str) -> Vec<u8> {
+        let hex = hex.trim_start_matches("0x");
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex"))
+            .collect()
     }
 
     /// The assertion `hedera-harness` cannot express: an app that had transactions refused.

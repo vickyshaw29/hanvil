@@ -7,7 +7,7 @@ use std::convert::Infallible;
 
 use alloy_consensus::{Transaction as _, TxEnvelope, transaction::SignerRecoverable as _};
 use alloy_eips::eip2718::Decodable2718 as _;
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256, keccak256};
 use revm::context::{Context, TxEnv};
 use revm::context_interface::result::{EVMError, ExecutionResult, InvalidTransaction};
 use revm::database::CacheDB;
@@ -292,6 +292,33 @@ pub fn revert_stub(reason: &str) -> alloy_primitives::Bytes {
     code.into()
 }
 
+/// `topics[0]` for an event, from its canonical signature — `keccak256("Transfer(address,\
+/// address,uint256)")`, the same thing `cast sig-event` prints.
+///
+/// `None` for anything that is not a signature: the caller wrote it by hand in a recipe, and a
+/// silently wrong topic would count zero events and read as an app that never emitted one. The
+/// check is deliberately shallow — a name, a parenthesised argument list, no whitespace — because
+/// Hanvil has no ABI parser and pretending to validate types would be the same lie one level
+/// down.
+pub fn event_topic(signature: &str) -> Option<B256> {
+    let (name, rest) = signature.split_once('(')?;
+    let args = rest.strip_suffix(')')?;
+    let is_ident = |s: &str| {
+        !s.is_empty()
+            && !s.starts_with(|c: char| c.is_ascii_digit())
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'$')
+    };
+    if !is_ident(name) || signature.contains(char::is_whitespace) {
+        return None;
+    }
+    // `()` is a valid argument list; anything else must be non-empty comma-separated types.
+    if !args.is_empty() && !args.split(',').all(|arg| !arg.is_empty()) {
+        return None;
+    }
+    Some(keccak256(signature.as_bytes()))
+}
+
 /// Human-readable reason from revert data: `Error(string)` and `Panic(uint256)`.
 pub fn revert_reason(data: &[u8]) -> Option<String> {
     const ERROR_SELECTOR: [u8; 4] = [0x08, 0xc3, 0x79, 0xa0];
@@ -392,6 +419,37 @@ mod tests {
             rejected.to_string(),
             "gas price below the network gas price of 71 tinybar"
         );
+    }
+
+    #[test]
+    fn event_topic_matches_cast_sig_event_and_refuses_a_non_signature() {
+        // The value tests/rpc.rs computes inline for the Counter fixture.
+        assert_eq!(
+            event_topic("Incremented(address,uint256)").map(|t| format!("{t:#x}")),
+            Some(format!(
+                "{:#x}",
+                keccak256("Incremented(address,uint256)".as_bytes())
+            ))
+        );
+        assert!(event_topic("Paused()").is_some());
+        assert!(event_topic("Transfer(address,address,uint256)").is_some());
+        assert!(event_topic("_1(uint256)").is_some(), "a leading underscore");
+
+        for not_a_signature in [
+            "Incremented",                   // no argument list
+            "Incremented(address,uint256",   // unterminated
+            "Incremented(address, uint256)", // a space the hash would not forgive
+            "(address)",                     // no name
+            "1Bad(uint256)",                 // not an identifier
+            "Incremented(address,)",         // an empty type
+            "0x1234",                        // a topic, not a signature
+        ] {
+            assert_eq!(
+                event_topic(not_a_signature),
+                None,
+                "{not_a_signature:?} is not a signature"
+            );
+        }
     }
 
     #[test]

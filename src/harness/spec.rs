@@ -396,6 +396,16 @@ pub(crate) enum AccountRef {
     Evm(String),
 }
 
+/// A contract named in a chain assertion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ContractRef {
+    /// The newest contract on the chain — the one the attempt's deploy or app created last, so a
+    /// recipe can assert on a deployment whose address it never sees.
+    Created,
+    /// A 20-byte EVM address.
+    Address(String),
+}
+
 /// A topic named in a chain assertion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TopicRef {
@@ -420,12 +430,17 @@ pub(crate) enum ChainAssertion {
         /// The account must (not) be deleted.
         deleted: Option<bool>,
     },
-    /// Code at an EVM address.
+    /// Code at an EVM address, and optionally the events it emitted since the attempt's
+    /// snapshot.
     Contract {
-        /// The address.
-        address: String,
+        /// Which contract.
+        contract: ContractRef,
         /// Code must (not) be present.
         deployed: bool,
+        /// A canonical event signature, e.g. `Transfer(address,address,uint256)`.
+        event: Option<String>,
+        /// Minimum count of that event. Meaningless without `event`.
+        at_least: u64,
     },
     /// Message count of a topic.
     Topic {
@@ -1284,15 +1299,44 @@ fn read_chain_assertion(index: usize, item: &Value) -> Result<ChainAssertion, Er
             })
         }
         "contract" => {
-            let address = read_string(entry, "contract")?;
-            if !is_evm_address(&address) {
-                return Err(invalid(format!(
-                    "{at}.contract must be a 0x-prefixed 20-byte address."
-                )));
-            }
+            let contract = match read_string(entry, "contract")?.as_str() {
+                "created" => ContractRef::Created,
+                address if is_evm_address(address) => ContractRef::Address(address.to_string()),
+                _ => {
+                    return Err(invalid(format!(
+                        "{at}.contract must be \"created\" or a 0x-prefixed 20-byte address."
+                    )));
+                }
+            };
+            let event = match entry.get("event") {
+                None => None,
+                Some(_) => {
+                    let signature = read_string(entry, "event")?;
+                    if crate::evm::event_topic(&signature).is_none() {
+                        return Err(invalid(format!(
+                            "{at}.event must be a canonical event signature with no spaces, like \
+                             \"Transfer(address,address,uint256)\"."
+                        )));
+                    }
+                    Some(signature)
+                }
+            };
+            let at_least = match entry.get("atLeast") {
+                None => 1,
+                Some(raw) => match raw.as_f64() {
+                    Some(n) if n.fract() == 0.0 && n >= 1.0 => n as u64,
+                    _ => {
+                        return Err(invalid(format!(
+                            "Expected positive integer \"{at}.atLeast\"."
+                        )));
+                    }
+                },
+            };
             Ok(ChainAssertion::Contract {
-                address,
+                contract,
                 deployed: read_optional_bool(entry, "deployed", &at)?.unwrap_or(true),
+                event,
+                at_least,
             })
         }
         "topic" => {
@@ -1933,7 +1977,12 @@ mod tests {
         );
         assert!(matches!(
             &assertions[2],
-            ChainAssertion::Contract { deployed: true, .. }
+            ChainAssertion::Contract {
+                contract: ContractRef::Address(_),
+                deployed: true,
+                event: None,
+                at_least: 1,
+            }
         ));
         assert_eq!(
             assertions[3],
@@ -1948,6 +1997,23 @@ mod tests {
                 kind: "CONSENSUSSUBMITMESSAGE".into(),
                 payer: Some(AccountRef::Signer),
                 at_least: 2
+            }
+        );
+
+        // The newest contract on the chain, and an event it must have emitted.
+        let events = spec_of(&format!(
+            "{MINIMAL}chainValidation:\n  network: local\n  assert:\n    - contract: created\n      event: \"Incremented(address,uint256)\"\n      atLeast: 2\n"
+        ))
+        .chain_validation
+        .expect("chain")
+        .assertions;
+        assert_eq!(
+            events[0],
+            ChainAssertion::Contract {
+                contract: ContractRef::Created,
+                deployed: true,
+                event: Some("Incremented(address,uint256)".into()),
+                at_least: 2,
             }
         );
 
@@ -1992,7 +2058,7 @@ mod tests {
             (
                 // Quoted: YAML 1.1 reads a short unquoted `0x12` as the integer 18.
                 "- {contract: \"0x12\"}\n",
-                "chainValidation.assert[0].contract must be a 0x-prefixed 20-byte address.",
+                "chainValidation.assert[0].contract must be \"created\" or a 0x-prefixed 20-byte address.",
             ),
             (
                 "- {topic: created}\n",
@@ -2017,6 +2083,14 @@ mod tests {
             (
                 "- {rejections: {atMost: -1}}\n",
                 "Expected non-negative integer \"chainValidation.assert[0].rejections.atMost\".",
+            ),
+            (
+                "- {contract: created, event: \"Transfer(address, uint256)\"}\n",
+                "chainValidation.assert[0].event must be a canonical event signature with no spaces, like \"Transfer(address,address,uint256)\".",
+            ),
+            (
+                "- {contract: created, event: \"Ok()\", atLeast: 0}\n",
+                "Expected positive integer \"chainValidation.assert[0].atLeast\".",
             ),
             (
                 "- {rejections: {payer: bob}}\n",
