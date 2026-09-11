@@ -661,6 +661,21 @@ fn a_refusal_fails_the_run_on_its_own() {
     )
     .expect("json");
     assert_eq!(validation["findings"][0]["id"], "chain:0:rejections");
+
+    // The four counts CI can assert on, without parsing the rows.
+    let report: Value = serde_json::from_str(
+        &std::fs::read_to_string(run_dir.join("reports/report.json")).expect("report"),
+    )
+    .expect("json");
+    assert_eq!(
+        report["chainLedger"],
+        serde_json::json!({
+            "transactions": 3,
+            "succeeded": 1,
+            "failed": 0,
+            "rejected": 2,
+        })
+    );
     let message = validation["findings"][0]["message"]
         .as_str()
         .expect("message");
@@ -673,6 +688,43 @@ fn a_refusal_fails_the_run_on_its_own() {
     assert!(
         message.ends_with("a refused transaction leaves no record on any Hedera network"),
         "{message}"
+    );
+    let _ = std::fs::remove_dir_all(repo);
+}
+
+/// A repair that fixes the symptom and leaves the cause sends the same refused transaction
+/// again. Nothing else in the run would say so.
+#[test]
+fn a_repair_that_changed_nothing_is_told_the_refusal_repeated() {
+    let repo = fixture_repo("repeated");
+    let (ok, stdout, stderr) = run(
+        &[".harness/spec-rejections.yaml", "--max-attempts", "3"],
+        &repo,
+    );
+    assert!(!ok, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert!(
+        stdout.contains(
+            "[hanvil] Chain refusals repeated — 2× ETHEREUMTRANSACTION — Invalid params: 1 weibar"
+        ),
+        "{stdout}"
+    );
+
+    let run_dir = run_directory(&repo);
+    // Attempt 2's repair had no earlier attempt to compare against; attempt 3's does.
+    let second =
+        std::fs::read_to_string(run_dir.join("prompts/repair-attempt-2.txt")).expect("repair 2");
+    assert!(!second.contains("refused the same way"), "{second}");
+    let third =
+        std::fs::read_to_string(run_dir.join("prompts/repair-attempt-3.txt")).expect("repair 3");
+    assert!(
+        third.contains(
+            "The attempt before this one was refused the same way (2× ETHEREUMTRANSACTION"
+        ),
+        "{third}"
+    );
+    assert!(
+        third.contains("Change how the transaction is built, not what the page shows."),
+        "{third}"
     );
     let _ = std::fs::remove_dir_all(repo);
 }

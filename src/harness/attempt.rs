@@ -32,7 +32,7 @@ use crate::harness::findings::{
     truncate_details,
 };
 use crate::harness::git;
-use crate::harness::ledger::Ledger;
+use crate::harness::ledger::{self, Ledger};
 use crate::harness::mcp;
 use crate::harness::prompt::{self, ChainContext, Slice, VendoredContext, VendoredSkill};
 use crate::harness::session::{self, log_phase};
@@ -161,6 +161,10 @@ pub(crate) struct RunReport {
     /// Its evaluation, when EVALUATE ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) evaluation: Option<findings::Evaluation>,
+    /// Hanvil: what the final attempt did on the chain, in four numbers. Absent when CHAIN did
+    /// not run. The rows themselves are `logs/chain-ledger-attempt-N.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) chain_ledger: Option<ledger::Summary>,
 }
 
 /// The node under the run, as the loop sees it.
@@ -238,6 +242,8 @@ pub(crate) async fn run_loop(input: LoopInput<'_>) -> Result<RunReport, Error> {
     let mut attempts = input.starting_attempt.saturating_sub(1);
     let mut attempts_this_cycle = 0;
     let mut validation = ValidationResult::not_run_yet();
+    // Refusals this attempt made that the one before it made too; set after each validation.
+    let mut repeated;
     let mut latest_prompt = if is_continue {
         prompt::build_continue_prompt(
             spec,
@@ -329,10 +335,26 @@ pub(crate) async fn run_loop(input: LoopInput<'_>) -> Result<RunReport, Error> {
         )
         .await?;
 
+        let previous_ledger = validation.chain_ledger.take();
         validation = run_validation_stages(
             layout, spec, workspace, attempts, chain, signer, &mark, context, generate,
         )
         .await?;
+
+        // A repair that fixes the symptom and leaves the cause sends the same refused
+        // transaction again. Nothing else in the run would say so.
+        repeated = match (&validation.chain_ledger, &previous_ledger) {
+            (Some(now), Some(before)) => now.repeated_from(before),
+            _ => None,
+        };
+        if let Some(repeated) = &repeated {
+            log_phase(
+                "Chain refusals repeated",
+                Some(&format!(
+                    "{repeated} — the last attempt was refused these too"
+                )),
+            );
+        }
 
         delta = compute_delta(&open_finding_ids, &validation.findings);
         validation.findings = apply_status(
@@ -423,6 +445,7 @@ pub(crate) async fn run_loop(input: LoopInput<'_>) -> Result<RunReport, Error> {
                 Some(context),
                 reverted,
                 validation.chain_ledger.as_ref(),
+                repeated.as_deref(),
             )?;
         }
     }
@@ -1255,6 +1278,7 @@ fn finish_run(input: FinishInput<'_>) -> Result<RunReport, Error> {
         finished_at: finished_at.clone(),
         duration_ms: started.elapsed().as_millis() as u64,
         evaluation: validation.evaluation.clone(),
+        chain_ledger: validation.chain_ledger.as_ref().map(Ledger::counts),
         validation,
     };
     write_json_file(&layout.report_path, &report)?;

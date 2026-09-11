@@ -11,6 +11,8 @@
 //! Hanvil is the node. It keeps refusals on the chain ([`Chain::rejections`]), so the ledger
 //! carries both halves: what the app did, and what it was stopped from doing.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use alloy_primitives::Address;
@@ -64,6 +66,21 @@ pub(crate) struct Entry {
 pub(crate) struct Ledger {
     /// In consensus order, 1-based indices.
     pub(crate) entries: Vec<Entry>,
+}
+
+/// What the attempt did to the chain, in four numbers. Carried in `report.json` so CI can assert
+/// on a run rather than read it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Summary {
+    /// Everything the attempt sent.
+    pub(crate) transactions: usize,
+    /// Reached consensus and did what it said.
+    pub(crate) succeeded: usize,
+    /// Reached consensus, was charged, failed in the body.
+    pub(crate) failed: usize,
+    /// Refused before consensus. No record exists for these anywhere on Hedera.
+    pub(crate) rejected: usize,
 }
 
 /// Sort key: consensus order, with rejections placed by the instant the node refused them.
@@ -191,6 +208,43 @@ impl Ledger {
         self.entries
             .iter()
             .filter(|entry| entry.outcome == Outcome::Failed)
+    }
+
+    /// The four counts, for `report.json`.
+    pub(crate) fn counts(&self) -> Summary {
+        let rejected = self.rejected().count();
+        let failed = self.failed().count();
+        Summary {
+            transactions: self.entries.len(),
+            succeeded: self.entries.len() - rejected - failed,
+            failed,
+            rejected,
+        }
+    }
+
+    /// What the last attempt did on the chain that this one did again, when the repair changed
+    /// nothing about it. `None` when no refusal repeated — including when there were none.
+    ///
+    /// A repair that fixes the symptom and leaves the cause sends the same refused transaction
+    /// on the next attempt, and nothing else in the run would say so.
+    pub(crate) fn repeated_from(&self, previous: &Self) -> Option<String> {
+        let tally = |ledger: &Self| {
+            let mut counts: BTreeMap<(String, String), usize> = BTreeMap::new();
+            for entry in ledger.rejected() {
+                *counts
+                    .entry((entry.kind.clone(), entry.result.clone()))
+                    .or_default() += 1;
+            }
+            counts
+        };
+        let now = tally(self);
+        let before = tally(previous);
+        let repeated: Vec<String> = now
+            .iter()
+            .filter(|((kind, result), _)| before.contains_key(&(kind.clone(), result.clone())))
+            .map(|((kind, result), count)| format!("{count}× {kind} — {}", clip(result)))
+            .collect();
+        (!repeated.is_empty()).then(|| repeated.join("; "))
     }
 
     /// One line summarising the ledger, for the console header.
@@ -517,6 +571,69 @@ mod tests {
             "2 CONSENSUSSUBMITMESSAGE submission(s) were refused before consensus \
              (INVALID_SIGNATURE ×2, payer 0.0.1002) — no record exists for them on any Hedera network"
         );
+    }
+
+    #[test]
+    fn the_counts_add_up_and_a_repeated_refusal_is_named() {
+        let mut first_chain = chain();
+        let mark = Mark::of(&first_chain);
+        apply(
+            &mut first_chain,
+            Body::CreateTopic {
+                memo: String::new(),
+                admin_key: None,
+                submit_key: None,
+                auto_renew_period: 7_890_000,
+                auto_renew_account: None,
+            },
+            later(NOW, 10),
+        );
+        refuse(
+            &mut first_chain,
+            BodyKind::ConsensusSubmitMessage,
+            Status::InvalidSignature,
+            later(NOW, 20),
+        );
+        let first = Ledger::since(&first_chain, &mark);
+        assert_eq!(
+            first.counts(),
+            Summary {
+                transactions: 2,
+                succeeded: 1,
+                failed: 0,
+                rejected: 1,
+            }
+        );
+
+        // The repair changed nothing about the cause: the same refusal, again.
+        let mut second_chain = chain();
+        let second_mark = Mark::of(&second_chain);
+        refuse(
+            &mut second_chain,
+            BodyKind::ConsensusSubmitMessage,
+            Status::InvalidSignature,
+            later(NOW, 5),
+        );
+        let second = Ledger::since(&second_chain, &second_mark);
+        assert_eq!(
+            second.repeated_from(&first).as_deref(),
+            Some("1× CONSENSUSSUBMITMESSAGE — INVALID_SIGNATURE")
+        );
+
+        // A different refusal is not a repeat, and neither is none at all.
+        let mut third_chain = chain();
+        let third_mark = Mark::of(&third_chain);
+        refuse(
+            &mut third_chain,
+            BodyKind::CryptoTransfer,
+            Status::InsufficientPayerBalance,
+            later(NOW, 5),
+        );
+        assert_eq!(
+            Ledger::since(&third_chain, &third_mark).repeated_from(&first),
+            None
+        );
+        assert_eq!(Ledger::default().repeated_from(&first), None);
     }
 
     #[test]
