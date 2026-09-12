@@ -38,3 +38,26 @@ pub async fn bind(
     });
     Ok(Bound { local_addr, task })
 }
+
+/// Resolves on SIGINT or SIGTERM.
+///
+/// Ctrl-C is what a terminal sends. SIGTERM is what `docker stop`, a process supervisor and a
+/// cancelled CI job send, and to a node with state to write the two mean the same thing: stop, but
+/// finish what you promised first. Waiting only on ctrl-c loses the `--state` dump and leaves
+/// `hanvil run`'s agent, dev server and browser orphaned.
+pub async fn interrupt() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut terminate = signal(SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result,
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await
+    }
+}

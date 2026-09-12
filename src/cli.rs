@@ -274,7 +274,10 @@ pub fn banner(
         println!("           empty block every {seconds}s (--block-time)");
     }
     if let Some(path) = args.dump_path() {
-        println!("           state written to {} on exit", path.display());
+        println!(
+            "           state written to {} on ctrl-c or SIGTERM",
+            path.display()
+        );
     }
     println!();
 

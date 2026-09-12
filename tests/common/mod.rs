@@ -132,10 +132,15 @@ impl Node {
 
 impl Node {
     /// Ask the node to shut down the way a user would, so `--state` is written, and wait for it.
-    pub fn shutdown(mut self) {
-        // SIGINT is what `tokio::signal::ctrl_c` waits on; `kill` would skip the dump.
+    pub fn shutdown(self) {
+        self.shutdown_with("INT");
+    }
+
+    /// Shut down with `signal`. Both `INT` and `TERM` are handled; `KILL` is not, and skips the
+    /// dump, which is the difference this exists to test.
+    pub fn shutdown_with(mut self, signal: &str) {
         let _ = Command::new("kill")
-            .args(["-INT", &self.child.id().to_string()])
+            .args([&format!("-{signal}"), &self.child.id().to_string()])
             .status();
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
@@ -145,7 +150,7 @@ impl Node {
                 Err(_) => return,
             }
         }
-        panic!("hanvil did not exit within 10s of SIGINT");
+        panic!("hanvil did not exit within 10s of SIG{signal}");
     }
 }
 

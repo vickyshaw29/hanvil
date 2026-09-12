@@ -58,7 +58,7 @@ pub(crate) async fn dispatch(command: cli::Command, node: cli::NodeArgs) -> Exit
         // ctrl-c in a terminal never reaches it.
         cli::Command::Toll(args) => match tokio::select! {
             outcome = crate::toll::run(args, node) => Some(outcome),
-            _ = tokio::signal::ctrl_c() => None,
+            _ = crate::serve::interrupt() => None,
         } {
             None => {
                 println!("[hanvil] interrupted — stopping the facilitator and the service");
@@ -177,7 +177,7 @@ pub(crate) async fn dispatch(command: cli::Command, node: cli::NodeArgs) -> Exit
         // started; the run directory's status.json says `interrupted`.
         cli::Command::Run(args) => match tokio::select! {
             outcome = run::run(args, node) => Some(outcome),
-            _ = tokio::signal::ctrl_c() => None,
+            _ = crate::serve::interrupt() => None,
         } {
             None => {
                 println!(

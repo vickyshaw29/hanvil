@@ -393,6 +393,32 @@ fn state_survives_a_restart() {
     let _ = std::fs::remove_file(&file);
 }
 
+/// SIGTERM writes the state file too. `docker stop`, a process supervisor and a cancelled CI job
+/// all send it, and a node that only listened for ctrl-c dropped the whole chain without a word.
+#[test]
+fn sigterm_writes_the_state_file() {
+    let file = std::env::temp_dir().join(format!("hanvil-sigterm-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&file);
+    let path = file.to_str().unwrap();
+
+    {
+        let node = Node::boot_with(&["--state", path]);
+        send(&node, Some(Address::ZERO), Vec::new(), 1);
+        assert_eq!(node.result("eth_blockNumber", json!([])), json!("0x1"));
+        node.shutdown_with("TERM");
+    }
+
+    assert!(file.exists(), "SIGTERM wrote the chain on exit");
+    let node = Node::boot_with(&["--state", path]);
+    assert_eq!(
+        node.result("eth_blockNumber", json!([])),
+        json!("0x1"),
+        "the chain SIGTERM left behind boots again"
+    );
+    drop(node);
+    let _ = std::fs::remove_file(&file);
+}
+
 /// `--block-time` advances the chain on its own. Transactions are unaffected: they still mine
 /// immediately rather than waiting for the interval.
 #[test]

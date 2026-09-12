@@ -38,7 +38,7 @@ async fn main() -> anyhow::Result<ExitCode> {
     }
 }
 
-/// The bare node: boot, print the banner, run until ctrl-c, dump state if asked.
+/// The bare node: boot, print the banner, run until ctrl-c or SIGTERM, dump state if asked.
 async fn serve_node(args: &cli::NodeArgs, started: Instant) -> anyhow::Result<()> {
     let clock: Arc<dyn state::Clock> = Arc::new(state::time::SystemClock);
     let chain = node::load_or_genesis(args, clock.as_ref())?;
@@ -59,9 +59,9 @@ async fn serve_node(args: &cli::NodeArgs, started: Instant) -> anyhow::Result<()
         mine_on_interval(Arc::clone(&node.shared), Arc::clone(&node.clock), seconds)
     });
 
-    tokio::signal::ctrl_c()
+    serve::interrupt()
         .await
-        .context("waiting for ctrl-c")?;
+        .context("waiting for ctrl-c or SIGTERM")?;
     tracing::info!("shutting down");
     if let Some(task) = mining {
         task.abort();

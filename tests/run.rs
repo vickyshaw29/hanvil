@@ -408,10 +408,49 @@ fn a_failed_attempt_reverts_the_chain_under_the_repair() {
 /// exits 130, and leaves neither the signer's key file nor the runtime directories behind.
 #[test]
 fn ctrl_c_stops_the_agent_and_cleans_the_workspace() {
-    let repo = fixture_repo("ctrlc");
+    interrupt_stops_the_agent("ctrlc", "INT", "sleep 5959");
+}
+
+/// The same contract under SIGTERM, which is what `docker stop`, a supervisor and a cancelled CI
+/// job send. Listening only for ctrl-c left the agent, the dev server and the browser running and
+/// `status.json` still claiming the run was in GENERATE.
+#[test]
+fn sigterm_stops_the_agent_and_cleans_the_workspace() {
+    interrupt_stops_the_agent("sigterm", "TERM", "sleep 5957");
+}
+
+/// Start a run whose fake agent sleeps forever, signal hanvil during GENERATE, and assert it
+/// stopped cleanly. `marker` is the sleep the fake agent runs, so two of these can run at once
+/// without one's `pgrep` finding the other's child.
+fn interrupt_stops_the_agent(tag: &str, signal: &str, marker: &str) {
+    let repo = fixture_repo(tag);
+    let spec = format!(
+        "# A fake agent that never finishes: the interrupt test stops it during GENERATE.\n\
+         schemaVersion: 3\n\
+         name: slow-on-hanvil\n\
+         generator:\n  provider: command\n  command: bash\n  args: [\"-c\", \"{marker}\"]\n\
+         prd: .harness/prd.md\n\
+         requiredFiles:\n  - generated.txt\n\
+         chainValidation:\n  enabled: true\n  network: local\n\
+         baseline:\n  commands:\n    - name: install\n      command: \"true\"\n"
+    );
+    std::fs::write(repo.join(".harness/spec-interrupt.yaml"), spec).expect("spec written");
+    for args in [
+        vec!["add", "-A"],
+        vec!["commit", "-q", "--no-gpg-sign", "-m", "spec"],
+    ] {
+        assert!(
+            Command::new("git")
+                .args(&args)
+                .current_dir(&repo)
+                .status()
+                .expect("git runs")
+                .success()
+        );
+    }
     // Outside the workspace: an untracked file inside it would make `run` refuse the tree.
     let stdout_path =
-        std::env::temp_dir().join(format!("hanvil-run-ctrlc-{}.stdout", std::process::id()));
+        std::env::temp_dir().join(format!("hanvil-run-{tag}-{}.stdout", std::process::id()));
     let stdout_file = std::fs::File::create(&stdout_path).expect("stdout file");
     let mut child = Command::new(env!("CARGO_BIN_EXE_hanvil"))
         .env_clear()
@@ -419,7 +458,7 @@ fn ctrl_c_stops_the_agent_and_cleans_the_workspace() {
         .env("HOME", std::env::var("HOME").unwrap_or_default())
         .args([
             "run",
-            ".harness/spec-slow.yaml",
+            ".harness/spec-interrupt.yaml",
             "--no-skills",
             "--port",
             "0",
@@ -450,7 +489,7 @@ fn ctrl_c_stops_the_agent_and_cleans_the_workspace() {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     let killed = Command::new("kill")
-        .args(["-INT", &child.id().to_string()])
+        .args([&format!("-{signal}"), &child.id().to_string()])
         .status()
         .expect("kill runs");
     assert!(killed.success());
@@ -479,15 +518,15 @@ fn ctrl_c_stops_the_agent_and_cleans_the_workspace() {
         !repo.join(".harness/runtime").exists(),
         "runtime dir left behind"
     );
-    // The fake agent was `bash -c "sleep 5959"` in its own process group.
+    // The fake agent was `bash -c "<marker>"` in its own process group.
     std::thread::sleep(std::time::Duration::from_secs(1));
     let survivors = Command::new("pgrep")
-        .args(["-f", "sleep 5959"])
+        .args(["-f", marker])
         .output()
         .expect("pgrep runs");
     assert!(
         String::from_utf8_lossy(&survivors.stdout).trim().is_empty(),
-        "the agent survived Ctrl-C: {}",
+        "the agent survived SIG{signal}: {}",
         String::from_utf8_lossy(&survivors.stdout)
     );
     let _ = std::fs::remove_file(stdout_path);
