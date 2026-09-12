@@ -218,10 +218,28 @@ Not emulated. Each is a deliberate hole, not an oversight:
 - **Pagination.** `links.next` is always null and a list is cut at `limit` (default 25, maximum
   100). A query with more matches returns the first page and no cursor to the rest.
 - **Batch mining.** `evm_setAutomine` and `evm_setIntervalMining` return `-32601` with the reason.
+- **A transaction pool.** A transaction whose nonce is above the sender's is refused, not held
+  until the gap fills — Hedera refuses a future nonce too. A client that fires transactions in
+  parallel without awaiting receipts, which works on Anvil, gets every one after the first back as
+  `nonce too high`. Send them in nonce order, or await each receipt.
+- **HAPI size limits beyond two.** The serialised transaction is capped at 6,144 bytes
+  (`TRANSACTION_OVERSIZE`) and the memo at 100 bytes (`MEMO_TOO_LONG`), the values the protobuf
+  carries. Transfer-list length, token-transfer-list length and the per-body field caps are not
+  checked; a list long enough to matter is refused on the transaction's size instead.
+  `eth_sendRawTransaction` is a different path and is not capped here.
+- **Keeping every refusal.** The newest 1,000 are kept; `--max-rejections 0` keeps them all. They
+  are cloned into every snapshot and written into every `--state` dump, so an uncapped list costs
+  more than it looks: 20,000 refusals wrote a 9.8 MB state file, 543 KB capped.
 - **`anvil_dumpState`, `anvil_loadState` and `anvil_reset` over JSON-RPC.** State does persist
   across restarts, through `--state` and `--dump-state` on the command line.
 - **Base32 key aliases.** The mirror's `alias` field is null; hanvil mints EVM-address aliases,
   which `evm_address` already carries.
+- **`eth_accounts` as the relay answers it.** The relay's is empty because it holds no keys and
+  refuses `eth_sendTransaction` outright. hanvil implements that cheat, so `eth_accounts` names the
+  thirty accounts it will send for, in id order, as Anvil does. Note the first ten are long-zero
+  accounts: `eth_sendTransaction` works for them because the node holds the key, but the key
+  printed for 0.0.1002 derives to a *different* EVM address, so a client signing locally wants the
+  alias accounts, 0.0.1012 upward.
 - **Record file hashes.** A block's `hash` is a 32-byte keccak over its own fields, and
   `hapi_version` is null because hanvil is not a consensus node and will not claim a version.
 - **Itemised inner transfers.** A transaction's `transfers` list carries the fee and the top-level
@@ -328,7 +346,7 @@ attempt's findings become the next attempt's repair prompt.
 ```
 hanvil run [SPEC] [--max-attempts N] [--new | --continue BRANCH] [--workspace DIR] [--no-skills]
 hanvil doctor [SPEC] [--recipe-only]
-hanvil validate [SPEC]              # ASSERT, then SMOKE when ASSERT is clean; no agent
+hanvil validate [SPEC]              # ASSERT, CHAIN, then SMOKE when each is clean; no agent
 hanvil validate-semantic [SPEC]     # EVALUATE only, against the workspace as it is
 hanvil init [DIR] [--repo URL] [--ref REF] [--template NAME] [--skip-install]
 ```
@@ -342,8 +360,8 @@ the attempt left it.
 Every subprocess — agent, deploy commands, dev server, validator — receives `HANVIL_RPC_URL`,
 `HANVIL_MIRROR_URL`, `HANVIL_GRPC_URL`, `HEDERA_NETWORK=local` and
 `HARNESS_SIGNER_{ACCOUNT_ID,EVM_ADDRESS,PRIVATE_KEY}`. The signer's private key reads
-`<redacted by hanvil>` in every prompt file. Ctrl-C kills the agent, the dev server and the browser
-by process group, writes `status.json` with `"phase": "interrupted"`, and exits 130.
+`<redacted by hanvil>` in every prompt file. Ctrl-C or SIGTERM kills the agent, the dev server and
+the browser by process group, writes `status.json` with `"phase": "interrupted"`, and exits 130.
 
 The [recipe schema](docs/reference.md#recipe-schema), [a full run stage by
 stage](docs/reference.md#a-full-run-stage-by-stage) and the [six deviations from the

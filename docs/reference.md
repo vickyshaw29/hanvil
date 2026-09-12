@@ -120,7 +120,13 @@ deploy-then-advance order. Assertion indices run on across the flat block and ev
 adding a phase never renumbers a finding id.
 
 Two loader traps: `baseline.commands` must contain a command literally named `install`, and
-`validators/*.json` must be `{"commands": []}` and never `{}`.
+`validators/*.json` must be `{"commands": []}` and never `{}`. A recipe with no `validators:` block
+still points at both defaults, and a missing one now names the file and the line that satisfies it.
+
+`hanvil validate` runs this block — deploy commands, `advanceTimeSeconds`, `assert[]` and `phases`
+— against the in-process chain, the same code `hanvil run`'s third stage uses. It writes nothing
+under `.harness/runs`, and it boots a node on the recipe's ports, so pass `--port 0 --mirror-port 0
+--grpc-port 0` when one is already running. A dirty ASSERT skips CHAIN and says so.
 
 ### Phases, working
 

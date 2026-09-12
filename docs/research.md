@@ -639,3 +639,26 @@ size — `eth_chainId` with the same oversized param, storing nothing — take R
 own. The residue is allocator retention from parsing large batch requests, not the rejection list,
 and it is not reclaimed when the batch is dropped. The boot-time figure the README quotes is
 unaffected; the file sizes above are what the cap fixes.
+
+## `hanvil validate` ran no chain assertions (2026-09-12)
+
+`runner.ts:28-63` is ASSERT then SMOKE, and the port of it went the same way, so `validate` never
+read `chainValidation`. A recipe demanding 999,999,999 ℏ from a 10 ℏ signer, 500 messages on a
+topic that does not exist, and a deploy command that exits 1 reported `passed=true findings=0`; the
+deploy command left no marker file, so it had not run. Nothing on stdout said the stage was
+skipped.
+
+The CHAIN stage is now one function (`attempt::run_chain_stage`) that both `hanvil run` and
+`hanvil validate` call. `validate` passes no run directory, so it writes no ledger artifact and
+nothing under `.harness/runs`, which is the behaviour `tests/run.rs` pins.
+
+Two hazards found while fixing it, both now covered by tests that fail without the fix:
+
+- The signer's key file lives in a temp directory from `chain_for_app` onward. Adding an early
+  return for a CHAIN failure skipped `teardown`, leaving a funded private key at 0600 in
+  `/tmp/hanvil-validate-<pid>/chain/`. The same leak already existed on the `devserver::start`
+  error path.
+- `validate` now boots a node for every recipe with `chainValidation`, where before only a recipe
+  with a playwright gate did. `port_for` keeps the default 7546/5551/50211, so a developer with
+  `hanvil` already running gets a bind failure where `validate` used to work. The bind error names
+  the flags.
