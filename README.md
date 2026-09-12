@@ -115,6 +115,7 @@ hanvil's own numbers, same machine:
 | Tests, all green | 214 | `cargo test --release` |
 | Accounts pre-funded | 30, 10,000 ℏ each | the boot banner |
 | One x402 paid request, settled | 0.112 s | `yarn pay` against `hanvil toll` |
+| The same request, on Hedera testnet | 5.80 s | `TOLL_URL=…up.railway.app yarn pay` |
 | `hanvil doctor`, every check | 60 ms | `time hanvil doctor` in a copy of `tests/harness` |
 | `hanvil run`, one attempt, fake agent | 0.23 s | `time hanvil run --no-skills` in the same copy |
 | Signer provisioned on the chain | 152 µs | `chain_signer_provisioned.durationMicros` |
