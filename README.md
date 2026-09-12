@@ -56,6 +56,7 @@ Hanvil's own numbers, same machine and day:
 | Signer provisioned on the chain | 152 µs | `chain_signer_provisioned.durationMicros` in `.harness/runs/harness.log.jsonl` |
 | Chain snapshot before an attempt | 10 µs | `chain_snapshot_taken.durationMicros`, same log |
 | Chain state dump for replay | 35,122 bytes in 133 µs | `chain_state_written`, same log |
+| One x402 paid request, settled | 0.112 s | `yarn pay` against `hanvil toll`: 402, partial signature, facilitator co-sign and submit, 200 |
 | Full run with `claude` on `examples/hcs-receipts-api` | 9 min 32 s, 2 attempts | `report.json.durationMs`, measured 2026-09-10; the breakdown is under [Harness](#harness) |
 
 CI asserts the median boot stays under 100 ms on ubuntu and macos runners
@@ -229,6 +230,17 @@ Not emulated. Each of these is a deliberate hole, not an oversight:
   outbound socket.
 - Windows. Children are killed by process group with `pkill -g`; the harness runs on macOS here
   and on ubuntu in CI.
+- A facilitator in Rust. `hanvil toll` supervises a Node process, because the x402 `exact` scheme
+  for Hedera is TypeScript (`@x402/hedera`) and a Rust one would be a second copy of its wire
+  format. The node itself still opens no outbound socket, and `hanvil toll` without Node fails
+  saying so rather than starting half a rail.
+- x402 pricing in anything but HBAR. `asset: "0.0.0"`, amounts in tinybar, so there is no token
+  association step. `@x402/hedera` supports HTS tokens; the bundled service does not configure
+  them. Schemes other than `exact`, and x402 v1, are not covered either.
+- A CAIP-2 id of hanvil's own. `@x402/hedera` hardcodes
+  `SUPPORTED_HEDERA_NETWORKS = ["hedera:mainnet", "hedera:testnet"]`, so the local rail is quoted
+  as `hedera:testnet` and names the chain separately through `nodeUrl`. A receipt records both,
+  or a local payment would claim testnet.
 
 ### System contracts
 
@@ -581,6 +593,62 @@ Without the second, a repair attempt inherits whatever the previous attempt wrot
 recipe that mines three blocks per attempt and then fails, attempts end at block `0x3`, `0x6`,
 `0x9`; with it, `0x3`, `0x3`, `0x3`. #48 stacks on #47 and contains its commits; CI builds the
 harness from that branch.
+
+## Toll — x402 on the local chain
+
+`hanvil toll` serves an [x402](https://x402.org) payment rail on the chain in this process: a
+facilitator, a metered service, and three of hanvil's predefined accounts wired up as payer,
+destination and fee payer. A paid request settles in **0.112 s**, with no testnet account, no
+HBAR and no facilitator to sign up for.
+
+```
+$ hanvil toll
+x402 facilitator  http://127.0.0.1:4020
+Service           http://127.0.0.1:4021
+Settles on        the in-process chain (127.0.0.1:50211)
+Price             100000 tinybar per call
+
+feePayer          0.0.1004  the facilitator submits and pays the fee
+payer             0.0.1002  the account a call is charged to
+payTo             0.0.1003  where a settled toll lands
+```
+
+An x402 payment on Hedera is a `CryptoTransfer` the client partially signs and the facilitator
+co-signs and submits as fee payer. One paid call, read off hanvil's mirror:
+
+```
+0.0.1004-1789194758-592048710 CRYPTOTRANSFER SUCCESS
+  0.0.98    +10000   the fee
+  0.0.1002 -100000   the payer
+  0.0.1003 +100000   payTo
+  0.0.1004  -10000   the facilitator, which paid the fee
+```
+
+Every way that payment can fail is refused **before consensus**, and a pre-consensus refusal
+writes no record, no receipt and no mirror row on any Hedera network. Replay a payment header and
+the two sides disagree about how much is knowable:
+
+```
+$ yarn replay
+[replay] first request  200  settled 0.0.1004@1789194847.284997026
+[replay] replayed once  402  refused transaction_failed      <- all x402 can tell you
+
+[replay] hanvil_rejections grew by 1:
+{ kind: 'CRYPTOTRANSFER', payer: '0.0.1004', code: 11, reason: 'DUPLICATE_TRANSACTION' }
+```
+
+`transaction_failed` is what a developer on testnet gets, and there is nothing on any mirror node
+to look up. hanvil is the node, so it keeps the refusal — over JSON-RPC as `hanvil_rejections`, in
+the chain ledger during a `hanvil run`, and as `rejections` assertions in a recipe. After the
+three paid requests above hanvil's mirror held three `CRYPTOTRANSFER SUCCESS` rows and nothing
+else; the duplicate existed only in that list.
+
+The facilitator is [x402's own reference implementation](https://github.com/x402-foundation/x402),
+not a reimplementation of one. The single change is `buildHederaClient`, the extension point its
+own example uses, which returns `Client.forNetwork({ [HANVIL_GRPC_URL]: 0.0.3 })`. The same
+service deploys against [Blocky402](https://blocky402.com) on testnet by setting
+`FACILITATOR_URL`; the rail, the receipts and what has to be pointed at hanvil so nothing reaches
+the real network are in [`examples/toll/README.md`](examples/toll/README.md).
 
 ## How it is built
 

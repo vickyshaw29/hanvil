@@ -504,3 +504,65 @@ Not resolved: the Hedera Account Service (HIP-632, status Final) names five func
 `getEvmAddressAlias` `0xdea3d081`, `getHederaAccountNumAlias` `0xbbf12d2e`, `isValidAlias`
 `0x308ef301`, `isAuthorized` `0xb2526367`, `isAuthorizedRaw` `0xb2a31da4` — and no address. It is
 not in the mirror node or relay clones either. No stub is etched for it, and the README says so.
+
+## 21. x402 on Hedera (2026-09-12): the facilitator, the packages, and four network leaks
+
+**`plan.md` §1's blocker was wrong.** It dropped the Agentic Payments track on 2026-09-10 because
+"Blocky402 lists `hedera:mainnet` only". That was the mainnet endpoint. Read today:
+
+```
+$ curl -s https://api.testnet.blocky402.com/supported
+{"kinds":[…,{"x402Version":2,"scheme":"exact","network":"hedera:testnet",
+             "extra":{"feePayer":"0.0.7162784"}}],"signers":{"hedera:*":["0.0.7162784"]}}
+$ curl -s https://api.blocky402.com/supported
+{"kinds":[{"x402Version":2,"scheme":"exact","network":"hedera:mainnet",
+           "extra":{"feePayer":"0.0.10571514"}}],"signers":{"hedera:*":["0.0.10571514"]}}
+```
+
+`hedera:testnet` is live, x402Version 2, scheme `exact`, no API key.
+
+**Two package generations, and the older one is the trap.** `x402`, `x402-express`, `x402-fetch`
+are 1.2.0 and implement x402 v1. `@x402/core`, `@x402/hedera`, `@x402/express`, `@x402/fetch`,
+`@x402/mcp` are 2.25.0 and implement v2, which is what the facilitator advertises. The headers
+differ: v2 is `PAYMENT-REQUIRED` / `PAYMENT-SIGNATURE` / `PAYMENT-RESPONSE`
+(`specs/transports-v2/http.md:11,57,113` in `x402-foundation/x402`), where v1 was `X-PAYMENT` and
+`X-PAYMENT-RESPONSE`. The harness's own PRD (`docs/prds/x402-metered-api.md:45`) documents the v1
+names, so a recipe built from it verbatim produces v1 code against a v2 facilitator.
+
+**HBAR is `asset: "0.0.0"` and amounts are in tinybar**, not dollars (`@x402/hedera` README,
+"Amount Units"). So `price: { amount: "100000", asset: "0.0.0" }`, and no HTS association step
+exists to get wrong. Spend controls refuse it by default — HBAR is not one of the "default
+assets" — and want `allowedAssets: [{ network, asset, maxAmountPerPayment }]` with an atomic cap,
+not `maxAmountPerPayment: "$1"`.
+
+**`SUPPORTED_HEDERA_NETWORKS = ["hedera:mainnet", "hedera:testnet"]`**
+(`@x402/hedera/dist/esm/chunk-UMKVEPVT.mjs:11`), asserted by the server scheme, the client signer
+and the facilitator. A local node cannot be quoted under an id of its own: `hedera:localnet` is
+refused with `Unsupported Hedera network`. The facilitator accepts it — `x402Facilitator.register`
+does not assert — which makes the failure look like a facilitator problem when it is a server one.
+
+**Four places derive the network from that id and reach the real one unless overridden.** All four
+take an explicit override, and all four must be set or a local rail talks to public testnet:
+
+| Call site | Option | What goes wrong without it |
+| --- | --- | --- |
+| `createHederaClient(network, nodeUrl)` (`index.mjs:268-279`) | `nodeUrl` | `Client.forTestnet()`; with it, `Client.forNetwork({ [nodeUrl]: 0.0.3 })` — hanvil's shape exactly |
+| `createClientHederaSigner(…, { nodeUrl })` (`index.mjs:139,167`) | `nodeUrl` | the payer freezes its transfer against testnet |
+| `createHederaVerifyPayerSignature({ mirrorNodeUrl })` (`index.mjs:231-260`) | `mirrorNodeUrl` | it reads the payer's public key off the mirror, so the wrong mirror reports a wrong key and **every** partial signature is refused `signature_invalid` |
+| `createHederaPreflightTransfer({ mirrorNodeUrl })` (`index.mjs:50-66`) | `mirrorNodeUrl` | the balance check asks testnet about a local account |
+
+The verifier is the one that costs an afternoon: the error names the signature, and the cause is
+the mirror.
+
+**The reference facilitator is extensible by design.** `toFacilitatorHederaSigner` takes
+`signAndSubmitTransaction: createHederaSignAndSubmitTransaction(buildHederaClient, key)`, where
+`buildHederaClient` is a caller-supplied closure
+(`examples/typescript/facilitator/advanced/all_networks.ts:309-323`). Returning a hanvil client
+from it is the whole of the local rail. It is x402's own facilitator, not a reimplementation, and
+the PRD's "do NOT build a custom facilitator" is not in conflict with running it locally.
+
+**Measured on hanvil, 2026-09-12.** One paid request end to end, 0.112 s. The settlement, off
+hanvil's own mirror, shows the fee-payer model: `0.0.1002 -100000` (payer), `0.0.1003 +100000`
+(payTo), `0.0.1004 -10000` (facilitator, the fee), `0.0.98 +10000`. A replayed
+`PAYMENT-SIGNATURE` header is refused `DUPLICATE_TRANSACTION` (11) before consensus: x402 reports
+`transaction_failed`, hanvil's mirror holds no row for it, and `hanvil_rejections` has it.
