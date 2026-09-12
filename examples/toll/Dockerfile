@@ -3,7 +3,10 @@
 # On `HEDERA_NETWORK=testnet` the facilitator is Blocky402, not `src/facilitator.ts`, and the
 # mirror is the public one — so nothing here needs hanvil. The same image on `local` would need
 # the chain in the same network namespace, which is what `hanvil toll` does instead.
-FROM node:20-slim
+# Node 22, not 20: @x402/core pulls @solana/wallet-standard-features, whose engines field is
+# ">=22". `yarn install` refuses on 20 with "Found incompatible module". package.json says
+# ">=20" because the Hedera path works there; the x402 path does not.
+FROM node:22-slim
 
 WORKDIR /app
 

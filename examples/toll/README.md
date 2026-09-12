@@ -121,6 +121,39 @@ server scheme, the client signer and the facilitator, so `hedera:localnet` is re
 A receipt therefore records `chain` as well as `network`: without it a local receipt would claim
 testnet for a payment that never left the machine.
 
+## Live on testnet
+
+https://hanvil-toll-production.up.railway.app — the same code in this directory, with
+`HEDERA_NETWORK=testnet`, settling through Blocky402.
+
+```
+$ curl -s https://hanvil-toll-production.up.railway.app/api/data/free
+{"reading":21.4,"unit":"celsius","paid":false,"at":"2026-09-12T09:17:07.422Z"}
+
+$ curl -si https://hanvil-toll-production.up.railway.app/api/data/paid | head -1
+HTTP/2 402
+payment-required: …"network":"hedera:testnet","amount":"100000","asset":"0.0.0",
+                    "payTo":"0.0.10497252","extra":{"feePayer":"0.0.7162784"}…
+
+$ TOLL_URL=https://hanvil-toll-production.up.railway.app yarn pay
+[agent] paid request answered 200 in 5.804s
+[agent] settlement SUCCESS 0.0.7162784@1789204637.167233288
+```
+
+Read back off the public mirror, not off this service's logs:
+
+| | |
+| --- | --- |
+| Settlement | [`0.0.7162784@1789204637.167233288`](https://hashscan.io/testnet/transaction/0.0.7162784@1789204637.167233288) |
+| Receipt topic | [`0.0.10497255`](https://hashscan.io/testnet/topic/0.0.10497255) — `x402.receipt.v1`, one message per settled call |
+| Payer | `0.0.10497245` −100,000 tinybar |
+| payTo | `0.0.10497252` +100,000 tinybar |
+| Fee | 268,330 tinybar, paid by Blocky402's fee payer `0.0.7162784` |
+
+The fee line is the point of the scheme: the payer signs a transfer it never submits and never pays
+the fee for. Measured 2026-09-12 — 5.80 s against testnet, 0.071 s against hanvil. Same code, same
+`yarn pay`, one environment variable apart.
+
 ## Deploying the testnet rail
 
 `Dockerfile` builds this service alone. On testnet the facilitator is Blocky402 and the mirror is

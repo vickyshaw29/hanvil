@@ -535,6 +535,15 @@ One switch picks the rail, and the same service runs on both:
 | `http://127.0.0.1:4020` | hanvil, in-process | `hanvil toll`, `hanvil run`, local development |
 | `https://api.testnet.blocky402.com` | Hedera testnet | a deployed service |
 
+That second row is deployed: **https://hanvil-toll-production.up.railway.app**, the same directory
+with `HEDERA_NETWORK=testnet`. One paid call from outside settles in 5.80 s through Blocky402 —
+[`0.0.7162784@1789204637.167233288`](https://hashscan.io/testnet/transaction/0.0.7162784@1789204637.167233288),
+payer `0.0.10497245` −100,000 tinybar, payTo `0.0.10497252` +100,000, and the 268,330-tinybar fee
+paid by the facilitator, which is the whole point of the scheme. Every settled call writes an
+`x402.receipt.v1` message to [topic `0.0.10497255`](https://hashscan.io/testnet/topic/0.0.10497255),
+so the payment history is provable from the chain rather than from the service's logs. The same
+`yarn pay`, one environment variable apart, is 0.071 s against hanvil.
+
 `examples/toll/.harness/` is a recipe that rebuilds the metered service from `hedera-harness`'s own
 x402 PRD, with chain assertions the app cannot fake: a topic created and written to, at least one
 `CRYPTOTRANSFER` settled, and `rejections: { atMost: 0 }` — an assertion that cannot be written
