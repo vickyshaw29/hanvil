@@ -1,0 +1,65 @@
+# Build the x402 metered API from hedera-harness's own PRD, on the chain this process owns.
+#
+# The chain assertions are evaluated after `deploy` runs and before the browser gates, so they
+# check the rail and the environment rather than the generated app: the preflight creates a topic,
+# makes one paid request, and must leave nothing refused before consensus. The app itself is
+# judged by SMOKE and EVALUATE, where a real payment is made in the browser. The agent can read
+# this file, so the gates are written down rather than hidden.
+schemaVersion: 3
+
+name: toll
+description: An x402-gated metered API on Hedera with HCS receipts, settled on the local chain.
+
+prd: .harness/prd.md
+eval: .harness/eval.json
+validator:
+  enabled: true
+maxAttempts: 3
+
+requiredFiles:
+  - template.json
+  - AGENTS.md
+  - packages/nextjs/package.json
+
+forbiddenFiles:
+  - .env
+  - .env.local
+  - packages/hardhat
+  - packages/foundry
+
+validators:
+  static: .harness/validators/static.json
+  commands: .harness/validators/commands.json
+  playwright: .harness/validators/playwright-smoke.yaml
+
+chainValidation:
+  enabled: true
+  network: local
+  fundingHbar: 50
+  expose:
+    # The PRD's burner path reads the key from here, and the browser gate needs it injected.
+    browserLocalStorageKey: burnerWallet.pk
+  deploy:
+    commands:
+      - name: preflight
+        command: node scripts/preflight.mjs
+        timeoutMs: 180000
+  assert:
+    - topic: created
+      messagesAtLeast: 1
+    - transactions:
+        type: CRYPTOTRANSFER
+        atLeast: 1
+    # The reason the local rail exists: a refused settlement leaves no record on any Hedera
+    # network, so on testnet this assertion could not be written at all.
+    - rejections:
+        atMost: 0
+
+constraints:
+  packageManager: yarn
+
+baseline:
+  commands:
+    - name: install
+      command: yarn install
+      timeoutMs: 600000

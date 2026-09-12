@@ -1,0 +1,16 @@
+{
+  "jsonAssertions": [
+    { "file": "template.json", "path": "capabilities.frontend", "equals": "nextjs-app" },
+    { "file": "template.json", "path": "capabilities.solidityFramework", "equals": "none" }
+  ],
+  "fileAssertions": {
+    "required": ["template.json", "AGENTS.md", "README.md", "packages/nextjs/package.json"],
+    "forbidden": [".env", ".env.local", "packages/hardhat", "packages/foundry"]
+  },
+  "textAssertions": [
+    {
+      "file": "AGENTS.md",
+      "contains": ["FACILITATOR_URL", "PAYMENT-SIGNATURE", "0.0.0"]
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "assertions": [
+    {
+      "id": "E1",
+      "severity": "critical",
+      "route": "/",
+      "statement": "The home page loads with no wallet connected, calls the free endpoint and shows its JSON, and offers a paid call that names the price in HBAR or tinybar.",
+      "howToVerify": "Navigate to the app root. Trigger the free endpoint and confirm a JSON reading is rendered. Confirm a control for the paid call exists and that the price is stated on screen.",
+      "walletRequired": false,
+      "verifiableWithoutCredentials": true
+    },
+    {
+      "id": "E2",
+      "severity": "critical",
+      "route": "/",
+      "statement": "With the burner key present in localStorage under burnerWallet.pk, the paid call completes and the UI shows a settled payment with its Hedera transaction id.",
+      "howToVerify": "The burner key is injected before the page loads. Trigger the paid call. Confirm the UI reports success and displays a transaction id shaped 0.0.N@seconds.nanos. A 402 that never resolves, or a success with no transaction id, is a failure.",
+      "walletRequired": false,
+      "verifiableWithoutCredentials": true
+    },
+    {
+      "id": "E3",
+      "severity": "critical",
+      "route": "/",
+      "statement": "The receipt feed lists at least one x402.receipt.v1 receipt read back from the mirror node, carrying the settlement transaction id.",
+      "howToVerify": "After the paid call, open the receipt view. Confirm at least one receipt is listed and that a transaction id is shown. The receipts are read from HANVIL_MIRROR_URL, not from in-memory state.",
+      "walletRequired": false,
+      "verifiableWithoutCredentials": true
+    },
+    {
+      "id": "E4",
+      "severity": "major",
+      "route": "/admin",
+      "statement": "The admin page shows the facilitator URL, the payTo account and the HCS topic in use, and does not display any private key.",
+      "howToVerify": "Navigate to /admin. Confirm the three values are shown. Search the visible text for a 64-hex or 0x-prefixed private key; finding one is a failure.",
+      "walletRequired": false,
+      "verifiableWithoutCredentials": true
+    },
+    {
+      "id": "E5",
+      "severity": "major",
+      "route": "/",
+      "statement": "An EVM-only wallet is refused with a message naming the reason, rather than failing silently or appearing to work.",
+      "howToVerify": "Look for the wallet selection affordance. Confirm the UI states that an EVM-only wallet such as MetaMask cannot sign a Hedera transfer, either as a disabled option with an explanation or as an error shown on selection. Judge the affordance and the copy; do not install a wallet.",
+      "walletRequired": false,
+      "verifiableWithoutCredentials": true
+    }
+  ]
+}

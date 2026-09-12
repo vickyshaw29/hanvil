@@ -27,6 +27,17 @@ function start(name, args) {
   return child;
 }
 
+function startShell(name, command) {
+  const child = spawn("sh", ["-c", command], { stdio: "inherit" });
+  child.on("exit", (code, signal) => {
+    if (signal === "SIGTERM" || signal === "SIGINT") return;
+    console.error(`[rail] ${name} exited with ${code ?? signal}; stopping the rail`);
+    stop(code ?? 1);
+  });
+  children.push(child);
+  return child;
+}
+
 function stop(code) {
   for (const child of children) child.kill("SIGTERM");
   process.exit(code);
@@ -50,6 +61,16 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => stop(0));
 }
 
+/**
+ * What the rail serves in front of the facilitator. Defaults to the reference service in
+ * `src/service.ts`; the generated app sets it to its own dev server.
+ */
+const SERVICE_COMMAND = process.env.RAIL_SERVICE_COMMAND;
+
 start("facilitator", ["src/facilitator.ts"]);
 await ready();
-start("service", ["src/service.ts"]);
+if (SERVICE_COMMAND === undefined) {
+  start("service", ["src/service.ts"]);
+} else {
+  startShell("service", SERVICE_COMMAND);
+}

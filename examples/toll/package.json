@@ -1,6 +1,9 @@
 {
   "name": "toll",
   "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
   "type": "module",
   "description": "An x402-gated API on Hedera. Settles on hanvil locally, on testnet through Blocky402.",
   "scripts": {
@@ -11,7 +14,9 @@
     "topic": "tsx src/topic.ts",
     "typecheck": "tsc --noEmit",
     "start": "tsx src/service.ts",
-    "replay": "tsx src/replay.ts"
+    "replay": "tsx src/replay.ts",
+    "preflight": "node scripts/preflight.mjs",
+    "rail:next": "RAIL_SERVICE_COMMAND=\"yarn --cwd packages/nextjs dev\" node scripts/rail.mjs"
   },
   "dependencies": {
     "@x402/core": "2.25.0",

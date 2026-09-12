@@ -1,0 +1,23 @@
+# The dev server is the whole rail: the facilitator has to be listening before the app can quote
+# a price, because x402ResourceServer reads /supported before it answers a 402.
+server:
+  command: yarn rail:next
+  url: http://127.0.0.1:3000
+  timeoutMs: 240000
+defaults:
+  timeoutMs: 30000
+  hydrationTimeoutMs: 60000
+  minBodyTextLength: 40
+  # The app calls a facilitator over HTTP and a mirror node; one CORS or aborted-fetch line
+  # would fail the attempt for a reason that is not a defect.
+  failOnConsoleError: false
+routes:
+  - name: home
+    path: /
+  - name: admin
+    path: /admin
+forbidden:
+  visibleText:
+    - "Application error"
+    - "Unhandled Runtime Error"
+    - "This page could not be found"

@@ -1,0 +1,7 @@
+{
+  "commands": [
+    { "name": "install", "command": "yarn install", "timeoutMs": 600000 },
+    { "name": "lint", "command": "yarn lint", "timeoutMs": 300000 },
+    { "name": "build", "command": "yarn next:build", "timeoutMs": 600000 }
+  ]
+}
