@@ -57,7 +57,7 @@ Started in 2 ms
 ## Why you might not
 
 hanvil emulates Hedera; it does not run it. Five headline limits, and
-[31 further declared holes](#what-is-emulated-and-what-is-not):
+[35 further declared holes](#what-is-emulated-and-what-is-not):
 
 - **It is not a consensus node.** No gossip, no multiple nodes, no staking, no record files. If
   what you are testing is consensus behaviour, run `hiero-local-node`.
@@ -75,17 +75,16 @@ hanvil emulates Hedera; it does not run it. Five headline limits, and
 | | hanvil | hiero-local-node | ratio |
 | --- | --- | --- | --- |
 | Boot to a JSON-RPC answer | **6 ms** | 50.6 s | 8,400× |
-| Boot, as each reports it | **2 ms** | 45.9 s | 23,000× |
-| Resident memory | **5.6 MB** | 3,898 MB | 696× |
-| On disk | **10.0 MB** | 9.4 GB | 940× |
+| Boot, as each reports it | **1 ms** | 45.9 s | 45,900× |
+| Resident memory | **5.8 MB** | 3,898 MB | 672× |
+| On disk | **10.1 MB** | 9.4 GB | 930× |
 | Processes | **1** | 18 running, 23 created | — |
 | Snapshot and restore the chain | `evm_snapshot` / `evm_revert` | not supported | — |
 | Chain survives a restart | `--state FILE` | not supported | — |
 
-One machine, one afternoon: an M-series Mac, release build, hanvil re-measured 2026-09-12 and the
-Docker stack 2026-09-11. hanvil's figures were taken at load average 18 with an agent run in
-progress, so they are the conservative direction — idle the day before, the same binary gave 5 ms
-and 5.4 MB. [Every command that produced them](docs/reference.md#reproducing-the-numbers).
+One machine, one afternoon: an M-series Mac, release build, hanvil re-measured 2026-09-13 and the
+Docker stack 2026-09-11. Each hanvil figure is the median of five runs.
+[Every command that produced them](docs/reference.md#reproducing-the-numbers).
 
 The last two rows are `hiero-local-node`'s own answer to its own FAQ: *"Can I stop the local node,
 save its state then start it again after a while? No, currently the local node doesn't support
@@ -113,12 +112,12 @@ hanvil's own numbers, same machine:
 
 | | | how it was measured |
 | --- | --- | --- |
-| Tests, all green | 214 | `cargo test --release` |
+| Tests, all green | 225 | `cargo test --release` |
 | Accounts pre-funded | 30, 10,000 ℏ each | the boot banner |
 | One x402 paid request, settled on hanvil | 0.081 s | `yarn pay` against `hanvil toll`, median of 9 |
 | The same request, settled on Hedera testnet | 4.91 s | `TOLL_URL=…up.railway.app yarn pay`, median of 5 |
 | `hanvil doctor`, every check | 60 ms | `time hanvil doctor` in a copy of `tests/harness` |
-| `hanvil run`, one attempt, fake agent | 0.23 s | `time hanvil run --no-skills` in the same copy |
+| `hanvil run`, one attempt, fake agent | 0.21 s | `time hanvil run --no-skills` in the same copy |
 | Signer provisioned on the chain | 152 µs | `chain_signer_provisioned.durationMicros` |
 | Chain snapshot before an attempt | 10 µs | `chain_snapshot_taken.durationMicros` |
 | Chain state dump for replay | 35,122 bytes in 133 µs | `chain_state_written` |
