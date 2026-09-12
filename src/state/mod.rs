@@ -450,6 +450,19 @@ impl Chain {
             .is_some_and(|a| a.private_key_hex.is_some())
     }
 
+    /// Every address `eth_sendTransaction` will send for without `anvil_impersonateAccount`: the
+    /// predefined accounts, in id order, which is `hiero-local-node`'s own numbering.
+    ///
+    /// Impersonated addresses are not here. Hanvil holds no key for them, and the set has no
+    /// enumerator because nothing else needs one.
+    pub fn signing_addresses(&self) -> Vec<Address> {
+        self.accounts
+            .values()
+            .filter(|account| account.private_key_hex.is_some())
+            .map(Account::evm_address)
+            .collect()
+    }
+
     /// Logs in `[from_block, to_block]` matching the filter, in block and log order.
     pub fn logs(&self, filter: &LogFilter) -> Vec<&StoredLog> {
         let to = filter.to_block.min(self.block_number());

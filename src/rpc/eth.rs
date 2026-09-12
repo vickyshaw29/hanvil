@@ -6,9 +6,9 @@ use serde_json::{Value, json};
 
 use super::RpcError;
 use super::types::{
-    block_json, data, hash, log_json, parse_address, parse_block_number, parse_bytes, parse_call,
-    parse_hash, parse_log_filter, parse_optional_nonce, parse_quantity, parse_u64, quantity_u64,
-    receipt_json, to_block_is_pinned, tx_json, weibar, weibar_u64,
+    address, block_json, data, hash, log_json, parse_address, parse_block_number, parse_bytes,
+    parse_call, parse_hash, parse_log_filter, parse_optional_nonce, parse_quantity, parse_u64,
+    quantity_u64, receipt_json, to_block_is_pinned, tx_json, weibar, weibar_u64,
 };
 use crate::evm;
 use crate::state::{
@@ -57,7 +57,18 @@ pub fn call(
         "eth_gasPrice" => Ok(json!(weibar(chain.gas_price()))),
         "eth_maxPriorityFeePerGas" => Ok(json!("0x0")),
         "eth_feeHistory" => fee_history(chain, params),
-        "eth_accounts" => Ok(json!([])),
+        // Anvil's answer, not the relay's. The relay holds no keys and refuses
+        // `eth_sendTransaction` outright, so its empty list is self-consistent; hanvil implements
+        // the cheat, so it names the accounts it will send for. Without this, hardhat's
+        // `getSigners()` and ethers' `provider.getSigner()` see nothing on a node that would have
+        // served them.
+        "eth_accounts" => Ok(Value::Array(
+            chain
+                .signing_addresses()
+                .iter()
+                .map(|account| Value::String(address(account)))
+                .collect(),
+        )),
         "eth_mining" => Ok(json!(false)),
         "eth_syncing" => Ok(json!(false)),
         "eth_hashrate" => Ok(json!("0x0")),

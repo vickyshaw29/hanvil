@@ -656,3 +656,51 @@ fn gas_price_on_a_mined_transaction_is_the_price_paid() {
         "including the copy embedded in the block"
     );
 }
+
+/// `eth_accounts` lists the accounts `eth_sendTransaction` will send for. It answered `[]` while
+/// accepting all thirty, so hardhat's `getSigners()` and ethers' `provider.getSigner()` found
+/// nothing on a node that would have served them.
+#[test]
+fn eth_accounts_names_the_accounts_it_will_send_for() {
+    let node = Node::boot();
+    let accounts = node.result("eth_accounts", json!([]));
+    let accounts = accounts.as_array().expect("an array");
+    assert_eq!(accounts.len(), 30, "ten of each key type");
+    assert_eq!(
+        accounts[0], "0x00000000000000000000000000000000000003ea",
+        "0.0.1002 first: id order, which is hiero-local-node's numbering"
+    );
+    assert_eq!(
+        accounts[10], SENDER,
+        "the first alias account is 0.0.1012, the one hardhat and viem use"
+    );
+
+    // Every listed account is one the node will actually send for, with no impersonation.
+    for account in accounts {
+        node.result(
+            "eth_sendTransaction",
+            json!([{ "from": account, "to": SENDER, "value": "0x0", "gas": "0x5208" }]),
+        );
+    }
+    // And an address that is not listed still is not.
+    let refused = node.error(
+        "eth_sendTransaction",
+        json!([{ "from": "0x1111111111111111111111111111111111111111", "to": SENDER, "value": "0x0" }]),
+    );
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("anvil_impersonateAccount")
+    );
+
+    let two = Node::boot_with(&["--accounts", "2"]);
+    assert_eq!(
+        two.result("eth_accounts", json!([]))
+            .as_array()
+            .unwrap()
+            .len(),
+        6,
+        "--accounts scales the list"
+    );
+}

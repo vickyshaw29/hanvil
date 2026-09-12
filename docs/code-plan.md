@@ -194,7 +194,7 @@ Implemented for real: `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_g
 topics + block range), `eth_getBlockTransactionCountBy{Hash,Number}`,
 `eth_getTransactionByBlock{Hash,Number}AndIndex`, `net_version`, `net_listening`,
 `web3_clientVersion` ("hanvil/<ver>"), `web3_sha3`.
-Relay-compatible stubs: `eth_accounts → []`, uncles → `null`/`0x0`, `eth_mining → false`,
+Relay-compatible stubs: uncles → `null`/`0x0`, `eth_mining → false`,
 `eth_hashrate → 0x0`, `eth_syncing → false`, `-32601` for the same set the relay rejects
 (`research.md §5`). Cheats per `research.md §11`.
 Errors: revert data returned as `{code:3, message:"execution reverted", data:0x…}` (Anvil/geth

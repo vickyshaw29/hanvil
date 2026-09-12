@@ -600,3 +600,22 @@ Correction to an audit claim of the same day: "a 4,000-leg transfer list is acce
 artifact. `@hiero-ledger/sdk`'s `addHbarTransfer` sums repeated transfers to one account, so a loop
 adding 2,000 debits and 2,000 credits between two accounts sends **two** legs in 90 bytes. With
 2,001 distinct accounts the same transaction is 32,084 bytes and is refused.
+
+## `eth_accounts` is Anvil's, not the relay's (2026-09-12)
+
+Corrects the line above recording `eth_accounts → []` as relay parity. It is parity, and it was
+wrong for hanvil: the relay holds no keys and refuses `eth_sendTransaction` outright (the `-32601`
+set in the same entry), so an empty list is self-consistent there. Hanvil implements the Anvil
+cheat — `Chain::send_unsigned` accepts any address `holds_key_for` or `is_impersonated` answers for
+— so an empty `eth_accounts` left hardhat's `getSigners()` and ethers' `provider.getSigner()` with
+nothing on a node that would have served them.
+
+`eth_accounts` now returns the thirty predefined accounts in id order, 0.0.1002 first. Impersonated
+addresses are not included: hanvil holds no key for them.
+
+Note what the first entry is. 0.0.1002–1011 are long-zero accounts, so `eth_accounts[0]` is
+`0x…03ea` while the private key the banner prints for 0.0.1002 derives to a different EVM address.
+`eth_sendTransaction` works for it because the node holds the key; a client that signs locally with
+that key sends from somewhere else. The alias accounts, 0.0.1012 upward, are the ones where the two
+agree — which is why `hiero-local-node` lists them as a separate group and why `tests/common` uses
+0.0.1012.
