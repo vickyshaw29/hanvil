@@ -1207,19 +1207,100 @@ fn validate_gives_the_app_the_chain_and_the_signer() {
     let _ = std::fs::remove_dir_all(repo);
 }
 
+/// The audit case. `hanvil validate` used to run ASSERT and stop, so a recipe demanding more HBAR
+/// than the signer holds, more topic messages than were ever sent, and a deploy command that
+/// exits 1 reported `passed=true findings=0` and said nothing about what it had not checked. The
+/// signer's key file must not outlive the run either, on this path or any other.
+#[test]
+fn validate_runs_the_chain_tier_and_sweeps_the_signer_when_it_fails() {
+    let repo = fixture_repo("validate-chain");
+    std::fs::write(repo.join("generated.txt"), "ok\n").expect("write");
+    std::fs::write(
+        repo.join(".harness/spec-impossible.yaml"),
+        "schemaVersion: 3\n\
+         name: impossible\n\
+         prd: .harness/prd.md\n\
+         requiredFiles:\n  - generated.txt\n\
+         chainValidation:\n  enabled: true\n  network: local\n  fundingHbar: 10\n\
+         \x20 assert:\n\
+         \x20   - { account: signer, minBalanceHbar: 999999999 }\n\
+         \x20   - { topic: created, messagesAtLeast: 500 }\n\
+         baseline:\n  commands:\n    - name: install\n      command: \"true\"\n",
+    )
+    .expect("spec");
+
+    let child = Command::new(env!("CARGO_BIN_EXE_hanvil"))
+        .args([
+            "validate",
+            ".harness/spec-impossible.yaml",
+            "--port",
+            "0",
+            "--mirror-port",
+            "0",
+            "--grpc-port",
+            "0",
+        ])
+        .current_dir(&repo)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("hanvil starts");
+    // The child's pid names its temp directory, so two of these running at once never see each
+    // other's.
+    let signer_dir = std::env::temp_dir().join(format!("hanvil-validate-{}", child.id()));
+    let output = child.wait_with_output().expect("hanvil runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !output.status.success(),
+        "an impossible chain assertion has to fail validate:\n{stdout}"
+    );
+    for line in [
+        "[hanvil] Chain assertions — 0 of 2 passed",
+        "passed=false",
+        "findings=2",
+        "- [chain] Chain assertion 0 (account) failed: account 0.0.1032 holds 10 \u{210f}, below the required 999999999",
+        "- [chain] Chain assertion 1 (topic) failed: no topic exists on the chain",
+        "[hanvil] Chain signer swept — 0.0.",
+    ] {
+        assert!(stdout.contains(line), "missing {line:?} in:\n{stdout}");
+    }
+    // That directory carries the signer's private key at 0600. A CHAIN failure returns early, and
+    // before the cleanup was lifted out of the straight line it would have left the key behind.
+    assert!(
+        !signer_dir.exists(),
+        "signer directory outlived validate: {}",
+        signer_dir.display()
+    );
+    assert!(
+        !repo.join(".harness/runs").exists(),
+        "validate writes no run"
+    );
+    let _ = std::fs::remove_dir_all(repo);
+}
+
 #[test]
 fn validate_runs_assert_alone_and_reports_like_upstream() {
     let repo = fixture_repo("validate");
-    let output = Command::new(env!("CARGO_BIN_EXE_hanvil"))
-        .args(["validate"])
-        .current_dir(&repo)
-        .output()
-        .expect("hanvil runs");
+    let validate = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_hanvil"))
+            .args(["validate"])
+            .args(args)
+            .args(["--port", "0", "--mirror-port", "0", "--grpc-port", "0"])
+            .current_dir(&repo)
+            .output()
+            .expect("hanvil runs")
+    };
+
+    let output = validate(&[]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
+    // A dirty ASSERT skips CHAIN, and says so: silence would read as "the chain assertions
+    // passed", which is the failure this whole stage exists to prevent.
     assert_eq!(
         stdout.trim(),
-        "Validation finished\npassed=false\nfindings=1\n- Required file is missing: generated.txt"
+        "[hanvil] Skipping CHAIN because deterministic gates are not clean.\n\
+         Validation finished\npassed=false\nfindings=1\n\
+         - [files] Required file is missing: generated.txt"
     );
     assert_eq!(
         git_stdout(&["branch", "--show-current"], &repo),
@@ -1232,15 +1313,26 @@ fn validate_runs_assert_alone_and_reports_like_upstream() {
     );
 
     std::fs::write(repo.join("generated.txt"), "ok\n").expect("write");
-    let output = Command::new(env!("CARGO_BIN_EXE_hanvil"))
-        .args(["validate", ".harness/spec.yaml"])
-        .current_dir(&repo)
-        .output()
-        .expect("hanvil runs");
-    assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout).trim(),
-        "Validation finished\npassed=true\nfindings=0"
+    let output = validate(&[".harness/spec.yaml"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    // The fixture's chainValidation has no deploy commands and no assertions, so CHAIN provisions
+    // a signer, finds nothing to do and sweeps it again. The report itself is upstream's.
+    assert!(
+        stdout
+            .trim()
+            .ends_with("Validation finished\npassed=true\nfindings=0"),
+        "{stdout}"
+    );
+    for line in [
+        "[hanvil] Chain signer provisioned — 0.0.",
+        "[hanvil] Chain signer swept — 0.0.",
+    ] {
+        assert!(stdout.contains(line), "missing {line:?} in:\n{stdout}");
+    }
+    assert!(
+        !repo.join(".harness/runs").exists(),
+        "validate still writes no run"
     );
     let _ = std::fs::remove_dir_all(repo);
 }

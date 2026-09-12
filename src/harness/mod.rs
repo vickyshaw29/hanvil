@@ -146,12 +146,11 @@ pub(crate) async fn dispatch(command: cli::Command, node: cli::NodeArgs) -> Exit
                         gate.routes.len()
                     ));
                 }
-                lines.extend(
-                    validation
-                        .findings
-                        .iter()
-                        .flat_map(|f| f.console_lines(format!("- {}", f.message))),
-                );
+                // With CHAIN running here, a finding can come from five different gates. The
+                // category says which, as `validate-semantic` and the run outro already do.
+                lines.extend(validation.findings.iter().flat_map(|f| {
+                    f.console_lines(format!("- [{}] {}", f.category.as_str(), f.message))
+                }));
                 lines.extend(validation.command_results.iter().map(|r| {
                     format!(
                         "command {} exit={} durationMs={}",

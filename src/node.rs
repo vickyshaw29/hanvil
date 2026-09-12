@@ -28,9 +28,13 @@ pub(crate) struct Node {
 /// What can stop a node from coming up.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
-    /// A listener could not bind. The address is in the message because a port already taken by
-    /// another hanvil is the usual cause, and the fix is a flag.
-    #[error("binding {listener} on {host}:{port}: {source}")]
+    /// A listener could not bind. The address and the flag are in the message because a port
+    /// already taken by another hanvil is the usual cause. `hanvil validate` boots a node for any
+    /// recipe with `chainValidation`, so this is reachable without ever running `hanvil` itself.
+    #[error(
+        "binding {listener} on {host}:{port}: {source}; another hanvil may hold this port — pass \
+         --port 0 --mirror-port 0 --grpc-port 0 for ephemeral ones"
+    )]
     Bind {
         /// Which listener.
         listener: &'static str,

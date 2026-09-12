@@ -136,8 +136,12 @@ pub(crate) async fn cleanup_after_interrupt() {
     }
 }
 
-/// `runner.ts:28-63`: ASSERT on the workspace, then the thin SMOKE gate when ASSERT is clean.
-/// No agent, no chain, no branch.
+/// `runner.ts:28-63`: ASSERT on the workspace, then CHAIN, then the thin SMOKE gate. No agent and
+/// no branch.
+///
+/// Hanvil: CHAIN used to be missing here entirely, so a recipe whose `chainValidation` demanded
+/// more HBAR than exists and more topic messages than were ever sent reported `passed=true` with
+/// no findings and no word about what had not been checked.
 pub(crate) async fn validate(
     args: ValidateArgs,
     node_args: NodeArgs,
@@ -155,10 +159,96 @@ pub(crate) async fn validate(
     let loaded = spec::load(&spec_path)?;
     let spec = &loaded.spec;
     let mut validation = crate::harness::assert::run(&workspace, spec, None).await?;
+
+    // Nothing lands under `.harness/runs`; the signer file lives in the temp dir and goes with it.
+    let output_dir = std::env::temp_dir().join(format!("hanvil-validate-{}", std::process::id()));
+    let ready = crate::harness::assert::is_ready_for_smoke(&validation.findings);
+    let wants_chain = spec.chain_validation.is_some();
+    if wants_chain && !ready {
+        println!("[hanvil] Skipping CHAIN because deterministic gates are not clean.");
+    }
+    if !wants_chain || !ready {
+        // No chain to boot, so no signer to sweep and no directory to remove.
+        return validate_without_chain(validation, spec, &workspace, ready).await;
+    }
+
+    let _ = std::fs::create_dir_all(&output_dir);
+    // The app gets the chain and the signer `run` would give it, or it cannot start.
+    let app = chain_for_app(&node_args, spec, &workspace, &output_dir.join("chain")).await?;
+    // Past this point the signer's key file is on disk. Nothing may use `?` or return until
+    // `teardown` has swept it and the directory is gone, which is why the rest is a closure whose
+    // result is only unwrapped after the cleanup below.
+    let outcome = validate_with_chain(&mut validation, spec, &workspace, &app, &output_dir).await;
+    app.teardown(spec);
+    let _ = std::fs::remove_dir_all(&output_dir);
+    outcome?;
+    validation.passed = validation.findings.is_empty();
+    Ok(validation)
+}
+
+/// CHAIN and then SMOKE, with the chain already booted. Separated so its caller can sweep the
+/// signer on every path out, including the ones that fail.
+async fn validate_with_chain(
+    validation: &mut crate::harness::findings::ValidationResult,
+    spec: &Spec,
+    workspace: &Path,
+    app: &AppChain,
+    output_dir: &Path,
+) -> Result<(), Error> {
+    let handle = crate::harness::attempt::ChainHandle {
+        shared: Arc::clone(&app.node.shared),
+        local: app.local.clone(),
+    };
+    let mark = crate::harness::chain::Mark::of(&handle.shared.read());
+    let outcome = crate::harness::attempt::run_chain_stage(crate::harness::attempt::ChainStage {
+        spec,
+        workspace,
+        chain: &handle,
+        signer: app.signer.as_ref(),
+        mark: &mark,
+        artifacts: None,
+    })
+    .await?;
+    validation.chain_ledger = outcome.ledger;
+    if outcome.stopped_at.is_some() {
+        validation.findings.extend(outcome.findings);
+        return Ok(());
+    }
+
+    let Some(playwright_path) = spec.validators.playwright_path.clone() else {
+        return Ok(());
+    };
+    let gate = crate::harness::smoke::load_gate_config(&playwright_path)?;
+    println!("[hanvil] Running thin Playwright gate...");
+    let mut dev_server =
+        crate::harness::devserver::start(workspace, &gate.server, "validate", &app.env).await?;
+    let (result, findings) = crate::harness::smoke::run_gate(
+        workspace,
+        &playwright_path,
+        &gate,
+        &mut dev_server,
+        output_dir,
+        &crate::harness::smoke::resolve_browser(),
+    )
+    .await;
+    dev_server.stop().await;
+    validation.findings.extend(findings);
+    validation.playwright_gate = Some(result);
+    Ok(())
+}
+
+/// The SMOKE gate for a recipe with no chain to boot, and the early exit for one whose
+/// deterministic gates are already dirty.
+async fn validate_without_chain(
+    mut validation: crate::harness::findings::ValidationResult,
+    spec: &Spec,
+    workspace: &Path,
+    ready: bool,
+) -> Result<crate::harness::findings::ValidationResult, Error> {
     let Some(playwright_path) = spec.validators.playwright_path.clone() else {
         return Ok(validation);
     };
-    if !crate::harness::assert::is_ready_for_smoke(&validation.findings) {
+    if !ready {
         println!("[hanvil] Skipping Playwright gate because deterministic gates are not clean.");
         return Ok(validation);
     }
@@ -166,19 +256,15 @@ pub(crate) async fn validate(
     println!("[hanvil] Running thin Playwright gate...");
     let output_dir = std::env::temp_dir().join(format!("hanvil-validate-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&output_dir);
-    // Hanvil: the app gets the chain and the signer `run` would give it, or it cannot start.
-    // Nothing lands under `.harness/runs`; the signer file lives in the temp dir and goes with it.
-    let app = match spec.chain_validation {
-        Some(_) => {
-            Some(chain_for_app(&node_args, spec, &workspace, &output_dir.join("chain")).await?)
-        }
-        None => None,
-    };
-    let env = app.as_ref().map(|app| app.env.clone()).unwrap_or_default();
-    let mut dev_server =
-        crate::harness::devserver::start(&workspace, &gate.server, "validate", &env).await?;
+    let mut dev_server = crate::harness::devserver::start(
+        workspace,
+        &gate.server,
+        "validate",
+        &std::collections::BTreeMap::new(),
+    )
+    .await?;
     let (result, findings) = crate::harness::smoke::run_gate(
-        &workspace,
+        workspace,
         &playwright_path,
         &gate,
         &mut dev_server,
@@ -187,9 +273,6 @@ pub(crate) async fn validate(
     )
     .await;
     dev_server.stop().await;
-    if let Some(app) = app {
-        app.teardown(spec);
-    }
     let _ = std::fs::remove_dir_all(&output_dir);
     validation.findings.extend(findings);
     validation.passed = validation.findings.is_empty();
