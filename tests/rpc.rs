@@ -626,7 +626,7 @@ fn gas_price_on_a_mined_transaction_is_the_price_paid() {
     let network = hex_u256(&node.result("eth_gasPrice", json!([])));
     let offered = network * U256::from(2);
 
-    let raw = sign_legacy_offering(&node, Address::ZERO, offered);
+    let raw = sign_legacy_offering(&node, Address::ZERO, offered, None);
     let hash = node.result("eth_sendRawTransaction", json!([raw]));
     let receipt = node.result("eth_getTransactionReceipt", json!([hash]));
     let tx = node.result("eth_getTransactionByHash", json!([hash]));
@@ -702,5 +702,42 @@ fn eth_accounts_names_the_accounts_it_will_send_for() {
             .len(),
         6,
         "--accounts scales the list"
+    );
+}
+
+/// A body past the limit answers in JSON-RPC. Axum's own rejection is a plain-text 413 that no
+/// client decodes, so a caller batching too much saw a transport error rather than a reason.
+#[test]
+fn an_oversized_request_body_is_refused_in_json_rpc() {
+    let node = Node::boot();
+    let huge = format!("0x{}", "ab".repeat(1_100_000));
+    let error = node.error("eth_sendRawTransaction", json!([huge]));
+    assert_eq!(error["code"], json!(-32600));
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("request body exceeds"),
+        "{error}"
+    );
+    // Still serving afterwards.
+    assert_eq!(node.result("eth_chainId", json!([])), json!("0x12a"));
+}
+
+/// The nonce refusal names the cause. hanvil mines one block per transaction and holds no pool, so
+/// a client firing transactions in parallel gets every one after the first refused; the message
+/// used to stop at the symptom.
+#[test]
+fn the_nonce_refusal_says_there_is_no_transaction_pool() {
+    let node = Node::boot();
+    let price = hex_u256(&node.result("eth_gasPrice", json!([])));
+    // Nonce 3 on an account at 0: what a client firing four transactions at once sends third.
+    let ahead = sign_legacy_offering(&node, Address::ZERO, price, Some(3));
+    let error = node.error("eth_sendRawTransaction", json!([ahead]));
+    let message = error["message"].as_str().expect("a message");
+    assert!(message.contains("nonce too high"), "{message}");
+    assert!(
+        message.contains("no transaction pool"),
+        "the refusal names the cause, not just the symptom: {message}"
     );
 }

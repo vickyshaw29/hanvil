@@ -56,8 +56,12 @@ pub enum Rejected {
         /// Nonce the account expects.
         state: u64,
     },
-    /// Nonce above the account's.
-    #[error("nonce too high: transaction has {tx}, account is at {state}")]
+    /// Nonce above the account's. There is no pool to hold it in until the gap fills, which is
+    /// the part a caller firing transactions in parallel needs told.
+    #[error(
+        "nonce too high: transaction has {tx}, account is at {state}; hanvil has no transaction \
+         pool, so send in nonce order or await each receipt — Hedera refuses a future nonce too"
+    )]
     NonceTooHigh {
         /// Nonce in the transaction.
         tx: u64,

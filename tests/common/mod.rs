@@ -254,9 +254,17 @@ fn submit(node: &Node, raw: String) -> Value {
 }
 
 /// A legacy transaction offering `gas_price` weibar per gas, which the chain caps at the network
-/// price. Used to tell the price offered from the price paid.
-pub fn sign_legacy_offering(node: &Node, to: Address, gas_price: U256) -> String {
-    let nonce = hex_u64(&node.result("eth_getTransactionCount", json!([SENDER, "latest"])));
+/// price, at `nonce` or the account's next. Used to tell the price offered from the price paid,
+/// and to send a nonce the account has not reached.
+pub fn sign_legacy_offering(
+    node: &Node,
+    to: Address,
+    gas_price: U256,
+    nonce: Option<u64>,
+) -> String {
+    let nonce = nonce.unwrap_or_else(|| {
+        hex_u64(&node.result("eth_getTransactionCount", json!([SENDER, "latest"])))
+    });
     let tx = TxLegacy {
         chain_id: Some(298),
         nonce,

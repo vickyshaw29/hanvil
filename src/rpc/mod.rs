@@ -7,8 +7,8 @@ mod types;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::body::Bytes;
-use axum::extract::State;
+use axum::body::Body;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
 use serde_json::{Value, json};
@@ -42,6 +42,14 @@ impl RpcError {
     /// -32600
     pub fn invalid_request() -> Self {
         Self::new(-32600, "Invalid Request")
+    }
+    /// -32600 for a body past the limit. Axum's own rejection is plain text with a 413, which no
+    /// JSON-RPC client decodes; a caller batching too much gets told the number instead.
+    pub fn body_too_large() -> Self {
+        Self::new(
+            -32600,
+            format!("request body exceeds {MAX_REQUEST_BYTES} bytes"),
+        )
     }
     /// -32601, the relay's wording for a method it knows and refuses.
     pub fn unsupported(method: &str) -> Self {
@@ -108,13 +116,25 @@ impl From<state::Error> for RpcError {
     }
 }
 
+/// Largest request body read. Ample: the EVM's 24 KB contract limit is 48 KB of hex, and a batch
+/// of a thousand calls is far short of this. Named rather than inherited so the refusal can say
+/// the number.
+const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
+
 /// Bind and serve. Returns once the socket is listening.
 pub async fn serve(app: App, host: &str, port: u16) -> std::io::Result<Bound> {
-    let router = Router::new().route("/", post(handle)).with_state(app);
+    let router = Router::new()
+        .route("/", post(handle))
+        // Read the body here instead, so the refusal is a JSON-RPC error object.
+        .layer(DefaultBodyLimit::disable())
+        .with_state(app);
     crate::serve::bind(host, port, router, "json-rpc").await
 }
 
-async fn handle(State(app): State<App>, body: Bytes) -> Response {
+async fn handle(State(app): State<App>, body: Body) -> Response {
+    let Ok(body) = axum::body::to_bytes(body, MAX_REQUEST_BYTES).await else {
+        return Json(error_response(Value::Null, RpcError::body_too_large())).into_response();
+    };
     let parsed: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(_) => return Json(error_response(Value::Null, RpcError::parse())).into_response(),
