@@ -247,7 +247,9 @@ Not emulated. Each is a deliberate hole, not an oversight:
   `tests/run.rs` against a second hanvil standing in for the network — real protobuf, real ECDSA
   over `keccak256(bodyBytes)`, real gRPC, real receipts, a real `CryptoDelete` the account signs
   for itself. Node addressing, the real fee schedule, mirror lag and TLS have not been run against
-  `0.testnet.hedera.com`. Point `chainValidation.node` at it and they will be.
+  `0.testnet.hedera.com`. Point `chainValidation.node` at it and they will be. This is about
+  `hanvil run`'s chain tier only: the x402 rail does settle on public testnet, and the transactions
+  are on HashScan.
 - **`hanvil run` with `agent: cursor`.** The preset and its `.cursor/mcp.json` delivery are ported
   line for line and have not been run against a Cursor install.
 - **SMOKE's HTTP status on Chromium older than 109.** It is read from
@@ -269,10 +271,11 @@ Not emulated. Each is a deliberate hole, not an oversight:
   `SUPPORTED_HEDERA_NETWORKS = ["hedera:mainnet", "hedera:testnet"]`, so the local rail is quoted
   as `hedera:testnet` and names the chain separately through `nodeUrl`. A receipt records both, or
   a local payment would claim testnet.
-- **A settled x402 payment on public testnet, as a verified claim.** `FACILITATOR_URL` switches the
-  rail to [Blocky402](https://blocky402.com) and the service is written for it, but every payment
-  number here was measured against hanvil. The testnet leg needs a funded ECDSA account and has not
-  been run.
+- **Hedera mainnet.** `HEDERA_NETWORK` takes `local` and `testnet` and refuses anything else by
+  name. [Blocky402](https://blocky402.com) runs a mainnet facilitator; this rail has never been
+  pointed at it, and nothing here has ever held value. The testnet leg *is* run —
+  [the deployed service](#hanvil-toll--x402-on-the-local-chain) and its settlements are on
+  HashScan.
 
 ### System contracts
 
