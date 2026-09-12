@@ -143,11 +143,13 @@ smallest passing limit (the 63/64 rule). Reverts from `eth_call`/`eth_estimateGa
 Only the head state is served: a historical block tag returns -32000 naming the head.
 
 **HAPI tx (gRPC)**: `Transaction.signedTransactionBytes` → `SignedTransaction` → `bodyBytes` →
-`TransactionBody`. Checks in order, each mapping to a precheck code: node account is 0.0.3
+`TransactionBody`. Checks in order, each mapping to a precheck code: the serialised transaction is
+within `transactionMaxBytes`, 6144 (`TRANSACTION_OVERSIZE`, checked before the decode because a
+transaction over the limit is refused on its length alone), node account is 0.0.3
 (`INVALID_NODE_ACCOUNT`), `transactionID.validStart` within `[now−3min, now+1min]`
 (`INVALID_TRANSACTION_START`), not already seen (`DUPLICATE_TRANSACTION`), payer exists
-(`INVALID_ACCOUNT_ID`), signature valid for payer key unless `--no-sig-verify`
-(`INVALID_SIGNATURE`), payer balance ≥ fee (`INSUFFICIENT_PAYER_BALANCE`). Return
+(`INVALID_ACCOUNT_ID`), memo ≤ 100 bytes (`MEMO_TOO_LONG`), signature valid for payer key unless
+`--no-sig-verify` (`INVALID_SIGNATURE`), payer balance ≥ fee (`INSUFFICIENT_PAYER_BALANCE`). Return
 `TransactionResponse{OK}` immediately, then apply the body synchronously and store the receipt
 under the transaction id — so the SDK's first `getTransactionReceipts` already sees `SUCCESS`.
 
@@ -421,8 +423,8 @@ watcher share one progress record, as `attemptStages.ts:92-110` does, so `status
 `lastActivity` is whichever of the two moved last and the tool-call counters stay the agent's.
 
 Subprocesses are spawned in their own process group and stopped with `pkill -TERM -g` then
-`pkill -KILL -g`; both pipes are drained from the first byte; Ctrl-C kills every live group and
-writes `status.json{phase:"interrupted"}`. Every `Chain` access is a block-scoped lock with no
+`pkill -KILL -g`; both pipes are drained from the first byte; Ctrl-C or SIGTERM kills every live
+group and writes `status.json{phase:"interrupted"}`. Every `Chain` access is a block-scoped lock with no
 `.await` inside.
 
 Run-log events beyond the upstream set: `chain_snapshot_taken`, `chain_snapshot_reverted`,

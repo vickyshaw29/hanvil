@@ -19,7 +19,7 @@ eth_getTransactionCount         eth_getTransactionReceipt       net_version
 eth_gasPrice                    eth_sendRawTransaction          net_listening
 eth_maxPriorityFeePerGas        eth_sendTransaction             web3_clientVersion
 eth_feeHistory                  eth_call                        web3_sha3
-eth_estimateGas
+eth_estimateGas                 eth_accounts
 eth_getBlockTransactionCountByHash      eth_getTransactionByBlockHashAndIndex
 eth_getBlockTransactionCountByNumber    eth_getTransactionByBlockNumberAndIndex
 ```
@@ -125,8 +125,9 @@ still points at both defaults, and a missing one now names the file and the line
 
 `hanvil validate` runs this block — deploy commands, `advanceTimeSeconds`, `assert[]` and `phases`
 — against the in-process chain, the same code `hanvil run`'s third stage uses. It writes nothing
-under `.harness/runs`, and it boots a node on the recipe's ports, so pass `--port 0 --mirror-port 0
---grpc-port 0` when one is already running. A dirty ASSERT skips CHAIN and says so.
+under `.harness/runs`, and it takes a free port rather than 7546, so it runs alongside a `hanvil`
+you already have up. A flag, or a recipe that names its own `chainValidation.local` URLs, still
+pins the ports. A dirty ASSERT skips CHAIN and says so.
 
 ### Phases, working
 
@@ -245,10 +246,10 @@ print("median %.0f ms, %.1f MB" % (statistics.median(sorted(r[0] for r in res)),
                                    statistics.median(sorted(r[1] for r in res))))
 ```
 
-hanvil's column was re-measured 2026-09-12 on an M-series Mac, 10 CPUs, release build — median of
-5 for the RPC answer, 11 for the banner, at load average 18 with an agent run in progress. Idle on
-2026-09-11 the same binary gave 5 ms and 5.4 MB, so the published figures are the conservative
-direction.
+hanvil's column was re-measured 2026-09-13 on an M-series Mac, 10 CPUs, release build — median of
+5 runs on an otherwise idle machine, which is where the README's 6 ms and 5.8 MB come from. The
+script signals SIGTERM: hanvil handles it as it handles ctrl-c, so a run with `--state` would write
+its file before exiting.
 
 ### The Docker stack
 
