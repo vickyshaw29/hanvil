@@ -52,6 +52,26 @@ pub(crate) const DEFAULT_SPEC_PATH: &str = ".harness/spec.yaml";
 /// not pass or anything threw (`index.ts:22-26` prints `Error: <message>`).
 pub(crate) async fn dispatch(command: cli::Command, node: cli::NodeArgs) -> ExitCode {
     match command {
+        // Not a harness subcommand: it serves a payment rail on the same in-process chain.
+        // Interrupt handling follows `Run` below — the future is dropped and every process
+        // group the rail started is stopped, because the rail is in a group of its own and
+        // ctrl-c in a terminal never reaches it.
+        cli::Command::Toll(args) => match tokio::select! {
+            outcome = crate::toll::run(args, node) => Some(outcome),
+            _ = tokio::signal::ctrl_c() => None,
+        } {
+            None => {
+                println!("[hanvil] interrupted — stopping the facilitator and the service");
+                let stopped = command::kill_all_groups().await;
+                println!("[hanvil] stopped {stopped} process group(s)");
+                ExitCode::from(130)
+            }
+            Some(Ok(())) => ExitCode::SUCCESS,
+            Some(Err(error)) => {
+                eprintln!("Error: {error}");
+                ExitCode::FAILURE
+            }
+        },
         cli::Command::Init(args) => match init::run(init::InitOptions {
             target_dir: args.target_dir,
             repo: args.repo,

@@ -116,6 +116,23 @@ async function recordReceipt(route: string, settled: SettlementResponse): Promis
   }
 }
 
+// The root describes the service. `hanvil toll` and the smoke gate both wait for a 200 here.
+app.get("/", (_request, response) => {
+  response.json({
+    service: "toll",
+    network: CAIP2,
+    chain: TOLL_NETWORK,
+    facilitator: FACILITATOR_URL,
+    topicId: TOPIC_ID ?? null,
+    routes: {
+      free: "/api/data/free",
+      paid: `${PAID_ROUTE} (${PRICE_TINYBARS} tinybar -> ${destination})`,
+      usage: "/api/usage",
+      receipts: "/api/receipts",
+    },
+  });
+});
+
 app.get("/api/data/free", (_request, response) => {
   meter.calls += 1;
   response.json({ reading: 21.4, unit: "celsius", paid: false, at: new Date().toISOString() });

@@ -33,7 +33,7 @@ pub struct Args {
     pub command: Option<Command>,
 }
 
-/// Harness subcommands, named as in `hedera-harness`.
+/// Subcommands. Bare `hanvil` is the node; the harness ones are named as in `hedera-harness`.
 #[derive(clap::Subcommand, Debug, Clone)]
 pub enum Command {
     /// Drive a coding agent against a recipe on the in-process chain, attempt by attempt.
@@ -47,6 +47,36 @@ pub enum Command {
     ValidateSemantic(ValidateArgs),
     /// Bootstrap a harness project from scaffold-hbar, or adopt the project in the target.
     Init(InitArgs),
+    /// Serve an x402 payment rail on the in-process chain: a facilitator and a metered service.
+    Toll(TollArgs),
+}
+
+/// `hanvil toll [DIR] [--facilitator-port N] [--service-port N] [--command CMD]`.
+///
+/// Boots the node, hands the rail three of its predefined accounts — a payer, a destination and
+/// a fee payer for the facilitator — and supervises it until ctrl-c. The rail itself is
+/// TypeScript, because the x402 `exact` scheme for Hedera is: see `examples/toll/README.md`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct TollArgs {
+    /// Directory of the rail to serve. Defaults to `examples/toll`.
+    #[arg(value_name = "DIR")]
+    pub dir: Option<PathBuf>,
+
+    /// Port the facilitator answers /verify and /settle on.
+    #[arg(long, value_name = "PORT", default_value_t = 4020)]
+    pub facilitator_port: u16,
+
+    /// Port the metered service listens on.
+    #[arg(long, value_name = "PORT", default_value_t = 4021)]
+    pub service_port: u16,
+
+    /// Command that starts the rail, run through the shell in DIR.
+    #[arg(long, value_name = "CMD")]
+    pub command: Option<String>,
+
+    /// Price of one call to the gated route, in tinybar.
+    #[arg(long, value_name = "TINYBAR", default_value_t = 100_000)]
+    pub price: u64,
 }
 
 /// `hanvil init [DIR] [--repo URL] [--ref REF] [--template NAME] [--skip-install]`.

@@ -14,6 +14,7 @@ mod node;
 mod rpc;
 mod serve;
 mod state;
+mod toll;
 
 use std::process::ExitCode;
 use std::sync::Arc;
