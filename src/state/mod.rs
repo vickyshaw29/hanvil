@@ -6,7 +6,7 @@ pub mod blocks;
 pub mod hapi;
 pub mod time;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use alloy_primitives::{Address, B256, Bloom, Bytes, U256, keccak256};
 use revm::DatabaseCommit as _;
@@ -89,6 +89,22 @@ pub enum Error {
 
 /// First entity id handed out to user accounts. Matches hiero-local-node.
 pub const FIRST_USER_ID: u64 = 1002;
+
+/// How many refused submissions the chain keeps by default.
+///
+/// The list is noise-driven — an app retrying a malformed transaction fills it — and it is cloned
+/// into every snapshot and written into every `--state` dump, so an uncapped one costs memory
+/// three ways. Twenty thousand refusals took a node from 4.2 MB to 24.3 MB. `--max-rejections 0`
+/// keeps them all.
+pub const DEFAULT_MAX_REJECTIONS: u64 = 1_000;
+
+/// Longest `Rejection.message` kept. The relay's error string is the part that grows; the harness
+/// ledger already clips it for display, and this is the storage half of the same idea.
+const MAX_REJECTION_MESSAGE_BYTES: usize = 512;
+
+fn default_max_rejections() -> u64 {
+    DEFAULT_MAX_REJECTIONS
+}
 /// Treasury; the JSON-RPC relay's operator on hiero-local-node.
 pub const TREASURY: EntityId = EntityId(2);
 /// The single consensus node.
@@ -178,7 +194,15 @@ pub struct Chain {
     /// Submissions refused before consensus, oldest first. `#[serde(default)]` so a state file
     /// written before this field existed still loads.
     #[serde(default)]
-    rejections: Vec<Rejection>,
+    rejections: VecDeque<Rejection>,
+    /// How many refusals the cap has dropped off the front. `Mark` counts refusals from the start
+    /// of the chain, so without this a dropped row would shift every later index.
+    #[serde(default)]
+    rejections_dropped: u64,
+    /// `--max-rejections`; 0 keeps every refusal. Not `#[serde(default)]` on its own: that would
+    /// be 0, so every state file written before this field existed would come back uncapped.
+    #[serde(default = "default_max_rejections")]
+    max_rejections: u64,
     /// Index into `hapi_records` by id. Not serialised — serde_json refuses a struct as a map
     /// key — and rebuilt by [`Chain::from_json`].
     #[serde(skip)]
@@ -209,7 +233,9 @@ impl Chain {
             impersonated: HashSet::new(),
             topics: BTreeMap::new(),
             hapi_records: Vec::new(),
-            rejections: Vec::new(),
+            rejections: VecDeque::new(),
+            rejections_dropped: 0,
+            max_rejections: DEFAULT_MAX_REJECTIONS,
             hapi_by_id: HashMap::new(),
             snapshots: BTreeMap::new(),
             next_snapshot: 0,
@@ -985,8 +1011,50 @@ impl Chain {
 
     /// Keep a refused submission. Called on every path that answers a caller with a precheck
     /// code instead of a receipt.
-    pub fn reject(&mut self, rejection: Rejection) {
-        self.rejections.push(rejection);
+    ///
+    /// The newest `max_rejections` are kept and the message is clipped, so a client in a retry
+    /// loop cannot grow the chain without bound. `hapi_records` is deliberately not capped the
+    /// same way: it is chain history, and `hapi_by_id` indexes it by position.
+    pub fn reject(&mut self, mut rejection: Rejection) {
+        if rejection.message.len() > MAX_REJECTION_MESSAGE_BYTES {
+            let mut end = MAX_REJECTION_MESSAGE_BYTES;
+            while end > 0 && !rejection.message.is_char_boundary(end) {
+                end -= 1;
+            }
+            rejection.message.truncate(end);
+            rejection.message.push('…');
+        }
+        self.rejections.push_back(rejection);
+        if self.max_rejections == 0 {
+            return;
+        }
+        while self.rejections.len() as u64 > self.max_rejections {
+            self.rejections.pop_front();
+            self.rejections_dropped += 1;
+            if self.rejections_dropped == 1 {
+                tracing::warn!(
+                    kept = self.max_rejections,
+                    "the oldest refusal was dropped; --max-rejections 0 keeps them all"
+                );
+            }
+        }
+    }
+
+    /// How many refusals this chain has seen, dropped ones included. `Mark` records this, not the
+    /// length, so a mark taken before the cap bit still points at the right place.
+    pub fn rejections_seen(&self) -> u64 {
+        self.rejections_dropped + self.rejections.len() as u64
+    }
+
+    /// How many refusals the cap has dropped off the front.
+    pub fn rejections_dropped(&self) -> u64 {
+        self.rejections_dropped
+    }
+
+    /// Set the cap. 0 keeps every refusal. Applied at boot, so `--max-rejections` wins over
+    /// whatever a `--state` file was written with.
+    pub fn set_max_rejections(&mut self, max: u64) {
+        self.max_rejections = max;
     }
 
     /// Whether this transaction id already reached consensus (`DUPLICATE_TRANSACTION`).
@@ -1606,6 +1674,90 @@ mod tests {
         assert!(restored.revert(snapshot));
         assert!(!restored.has_transaction_id(&id));
         assert!(!restored.account(EntityId(1003)).expect("account").deleted);
+    }
+
+    /// Refusals are noise-driven and are cloned into every snapshot and every `--state` dump, so
+    /// the newest N are kept. An uncapped list took a node from 4.2 MB to 24.3 MB on 20,000
+    /// refusals, and `hanvil_rejections` answered with 4.5 MB of JSON.
+    #[test]
+    fn the_rejection_list_keeps_the_newest_and_clips_the_message() {
+        let refusal = |n: usize| Rejection {
+            at: Timestamp::from_secs(1_757_000_000 + n as u64),
+            kind: None,
+            payer: None,
+            status: None,
+            from: None,
+            message: format!("refusal {n}"),
+        };
+
+        let mut capped = chain();
+        capped.set_max_rejections(3);
+        for n in 0..10 {
+            capped.reject(refusal(n));
+        }
+        assert_eq!(capped.rejections().count(), 3, "the cap holds");
+        assert_eq!(capped.rejections_dropped(), 7);
+        assert_eq!(capped.rejections_seen(), 10, "seen counts the dropped ones");
+        let kept: Vec<&str> = capped
+            .rejections()
+            .map(|rejection| rejection.message.as_str())
+            .collect();
+        assert_eq!(
+            kept,
+            ["refusal 7", "refusal 8", "refusal 9"],
+            "the newest survive, oldest first"
+        );
+
+        let mut unbounded = chain();
+        unbounded.set_max_rejections(0);
+        for n in 0..10 {
+            unbounded.reject(refusal(n));
+        }
+        assert_eq!(unbounded.rejections().count(), 10, "0 keeps every one");
+        assert_eq!(unbounded.rejections_dropped(), 0);
+
+        // A relay error string is not a reason to hold a megabyte.
+        let mut long = chain();
+        long.reject(Rejection {
+            message: "x".repeat(10_000),
+            ..refusal(0)
+        });
+        let stored = &long.rejections().next().expect("kept").message;
+        assert!(stored.len() < 600, "clipped to {}", stored.len());
+        assert!(stored.ends_with('\u{2026}'), "and says so");
+    }
+
+    /// A state file written before the cap existed has no `maxRejections`, and a plain
+    /// `#[serde(default)]` would read that as 0 — which means unbounded here, silently switching
+    /// the cap off for every chain that predates it.
+    #[test]
+    fn an_older_state_file_comes_back_capped() {
+        let chain = chain();
+        let json = chain.to_json().expect("serialises");
+        let mut without: serde_json::Value = serde_json::from_str(&json).expect("json");
+        let object = without.as_object_mut().expect("object");
+        assert!(
+            object.remove("max_rejections").is_some(),
+            "the field is in the file"
+        );
+        object.remove("rejections_dropped");
+
+        let mut restored = Chain::from_json(&without.to_string()).expect("an older file loads");
+        for n in 0..(DEFAULT_MAX_REJECTIONS + 5) {
+            restored.reject(Rejection {
+                at: Timestamp::from_secs(1_757_000_000 + n),
+                kind: None,
+                payer: None,
+                status: None,
+                from: None,
+                message: String::new(),
+            });
+        }
+        assert_eq!(
+            restored.rejections().count() as u64,
+            DEFAULT_MAX_REJECTIONS,
+            "the default applies, not unbounded"
+        );
     }
 
     /// A call to an unemulated system contract must fail loudly. Before genesis etched stubs

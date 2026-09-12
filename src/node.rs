@@ -69,6 +69,13 @@ pub(crate) enum Error {
 /// flags are ignored when the file exists — the state in it decides the chain id and the
 /// accounts.
 pub(crate) fn load_or_genesis(args: &NodeArgs, clock: &dyn Clock) -> Result<Chain, Error> {
+    // The flag is applied after the load so it wins over whatever the file was written with.
+    let mut chain = read_or_genesis(args, clock)?;
+    chain.set_max_rejections(args.max_rejections);
+    Ok(chain)
+}
+
+fn read_or_genesis(args: &NodeArgs, clock: &dyn Clock) -> Result<Chain, Error> {
     match args.state.as_ref().filter(|path| path.exists()) {
         Some(path) => {
             let json = std::fs::read_to_string(path).map_err(|source| Error::ReadState {

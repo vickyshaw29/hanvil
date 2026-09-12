@@ -160,7 +160,14 @@ impl Ledger {
             }
         }
 
-        for rejection in chain.rejections().skip(mark.rejections) {
+        // `mark.rejections` counts from the start of the chain; the list only holds the newest
+        // `--max-rejections`. Subtract what was dropped to land in the same place. When the mark's
+        // own rows have been dropped this saturates to 0, so the ledger shows every refusal still
+        // kept rather than silently skipping past the end.
+        let skip = mark
+            .rejections
+            .saturating_sub(chain.rejections_dropped() as usize);
+        for rejection in chain.rejections().skip(skip) {
             rows.push((
                 at(rejection.at),
                 Entry {
@@ -477,6 +484,46 @@ mod tests {
             from: None,
             message: String::new(),
         });
+    }
+
+    /// The cap drops the oldest refusals, and `Mark` counts from the start of the chain. If the
+    /// ledger skipped by the mark's raw number it would run past the end of the shortened list and
+    /// show nothing — losing exactly the evidence the ledger exists to carry.
+    #[test]
+    fn a_mark_still_finds_its_refusals_after_the_cap_drops_the_older_ones() {
+        let mut chain = chain();
+        chain.set_max_rejections(4);
+        for _ in 0..4 {
+            refuse(
+                &mut chain,
+                BodyKind::CryptoTransfer,
+                Status::InvalidSignature,
+                NOW,
+            );
+        }
+
+        let mark = Mark::of(&chain);
+        assert_eq!(mark.rejections, 4);
+
+        // Three more: the cap drops the three oldest, so the mark's index is now past the list.
+        for _ in 0..3 {
+            refuse(
+                &mut chain,
+                BodyKind::CryptoTransfer,
+                Status::InvalidAccountId,
+                NOW,
+            );
+        }
+        assert_eq!(chain.rejections().count(), 4, "the cap held");
+        assert_eq!(chain.rejections_dropped(), 3);
+        assert_eq!(chain.rejections_seen(), 7);
+
+        let ledger = Ledger::since(&chain, &mark);
+        assert_eq!(
+            ledger.rejected().count(),
+            3,
+            "the three refusals after the mark, not zero"
+        );
     }
 
     fn later(base: Timestamp, millis: u64) -> Timestamp {

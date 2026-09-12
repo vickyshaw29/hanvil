@@ -219,6 +219,12 @@ pub struct NodeArgs {
     #[arg(long, global = true, value_name = "SECONDS")]
     pub block_time: Option<u64>,
 
+    /// Refusals the chain keeps, newest first. 0 keeps every one. They have no receipt and no
+    /// mirror row, so hanvil is the only place they exist — but the list is cloned into every
+    /// snapshot and written into every `--state` dump, so it is capped by default.
+    #[arg(long, global = true, value_name = "N", default_value_t = crate::state::DEFAULT_MAX_REJECTIONS)]
+    pub max_rejections: u64,
+
     /// Load the chain from this file at boot, and write it back on exit. Genesis flags are
     /// ignored when the file exists: the state in it decides the chain id and the accounts.
     #[arg(long, global = true, value_name = "FILE")]

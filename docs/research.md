@@ -619,3 +619,23 @@ Note what the first entry is. 0.0.1002–1011 are long-zero accounts, so `eth_ac
 that key sends from somewhere else. The alias accounts, 0.0.1012 upward, are the ones where the two
 agree — which is why `hiero-local-node` lists them as a separate group and why `tests/common` uses
 0.0.1012.
+
+## What the rejection cap actually bounds (2026-09-12)
+
+Refusals are cloned into every snapshot and serialised into every `--state` dump and every
+`logs/chain-state-attempt-N.json`. Measured on the release binary, 20,000 refused
+`eth_sendRawTransaction` calls plus one `evm_snapshot`, dumped on exit:
+
+| `--max-rejections` | state file |
+| --- | --- |
+| 1000 (default) | 543,200 bytes |
+| 0 (unbounded) | 9,773,236 bytes |
+
+`hanvil_rejections` with no limit answers 225 KB instead of 4.5 MB.
+
+Correction to the audit of the same day, which read "20,000 refusals took RSS from 4.2 MB to
+24.3 MB" as the cost of the list. Most of it is not. Twenty thousand *no-op* requests of the same
+size — `eth_chainId` with the same oversized param, storing nothing — take RSS to 17.9 MB on their
+own. The residue is allocator retention from parsing large batch requests, not the rejection list,
+and it is not reclaimed when the batch is dropped. The boot-time figure the README quotes is
+unaffected; the file sizes above are what the cap fixes.

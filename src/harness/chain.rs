@@ -394,7 +394,9 @@ impl Mark {
         Self {
             records: chain.hapi_records().count(),
             blocks: chain.blocks().len(),
-            rejections: chain.rejections().count(),
+            // Refusals seen, not refusals kept: the cap drops the oldest, and an index into the
+            // list would shift with them.
+            rejections: chain.rejections_seen() as usize,
         }
     }
 }
