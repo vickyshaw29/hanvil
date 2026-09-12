@@ -83,10 +83,15 @@ impl Node {
             body.len(),
             body
         )
-        .expect("write request");
+        // Not `.expect()`: a body the server refuses on its length is answered and the socket
+        // closed while the rest is still going out, so the write legitimately fails mid-flight.
+        // What matters is the response, which is already on its way back.
+        .ok();
         let mut response = String::new();
-        stream.read_to_string(&mut response).expect("read response");
-        let (_, payload) = response.split_once("\r\n\r\n").expect("http body");
+        let _ = stream.read_to_string(&mut response);
+        let (_, payload) = response
+            .split_once("\r\n\r\n")
+            .unwrap_or_else(|| panic!("no http body in {response:?}"));
         serde_json::from_str(payload).expect("json body")
     }
 
