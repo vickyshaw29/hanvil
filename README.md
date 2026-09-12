@@ -25,7 +25,8 @@ Started in 2 ms
 
 **[Measured](#measured)** · [Quickstart](#quickstart) · [Endpoints](#endpoints) ·
 [What is not emulated](#what-is-emulated-and-what-is-not) · [The harness](#hanvil-run--the-harness) ·
-[Toll](#hanvil-toll--x402-on-the-local-chain) · [Reference](docs/reference.md)
+[Toll](#hanvil-toll--x402-on-the-local-chain) · [Authorship](#authorship-and-ai-use) ·
+[Reference](docs/reference.md)
 
 ## Why use it
 
@@ -584,6 +585,50 @@ The node makes no outbound network calls. It never fetches anything. The process
 
 The build is laid out in [`docs/code-plan.md`](docs/code-plan.md). Every claim about how Hedera's
 own tooling behaves is pinned to a file and line in [`docs/research.md`](docs/research.md).
+
+## Authorship and AI use
+
+hanvil is a solo project, built from a first commit on 2026-09-07 by Vicky Prasad
+([github.com/vickyshaw29](https://github.com/vickyshaw29)), who set both the direction and the bar
+it had to clear.
+
+The decisions were the work. Build the node first and make the existing harness run on it, rather
+than begin with a rewrite. Copy `hiero-local-node`'s ports, accounts and keys byte for byte, so
+nothing downstream has to know it changed. Run the EVM in tinybar rather than wei, and pay for that
+in every conversion, because Hedera does. Send two narrow PRs to `hedera-dev/hedera-harness` rather
+than fork it. Port the harness into the same binary only once the node was finished, so `hanvil run`
+is a second surface on one chain and not a second product. Keep the transactions Hedera refuses
+before consensus — the one thing a node can do that no mirror node can. Declare every hole rather
+than let a judge find a stub.
+
+Those decisions are written down ahead of the code, and the gates that enforce them are in the
+repository:
+
+| Path | What it is |
+| --- | --- |
+| [`.claude/CLAUDE.md`](.claude/CLAUDE.md) | the engineering standard every line was held to: one `Chain` behind one lock, every id a newtype, error codes mapped 1:1 to upstream, the deny list, the definition of done, and the anti-patterns that get reverted on sight |
+| [`docs/code-plan.md`](docs/code-plan.md) | the build plan the code followed |
+| [`docs/research.md`](docs/research.md) | every fact this project relies on, with the upstream file and line that settles it. A claim that is not in here does not go in the README |
+| [`.claude/hooks/`](.claude/hooks) | `pre-commit-gate.sh` fails a commit that adds an `unwrap` under `src/`, touches a forbidden path, or does not pass `cargo fmt` and `clippy -D warnings` |
+| [`.claude/skills/`](.claude/skills) | the repeatable procedures. `/gate` runs every CI gate locally; `/bench` produces every number this README is allowed to print; `/fact` settles a claim from source or answers "not found" |
+| [`.claude/agents/`](.claude/agents) | the review agents. `spec-checker` diffs a type field by field against `openapi.yml` or a `.proto`; `standard-reviewer` reviews a diff against the standard above; `upstream-reader` answers "how does the SDK actually do this" with evidence |
+
+The code was written with Claude Code against that standard and through those gates. Every commit
+carries a `Co-Authored-By: Claude` trailer, so `git log` shows exactly where that applies rather
+than leaving it to be taken on trust.
+
+No number in this README was estimated. Every figure in [Measured](#measured) was produced by a
+command — printed beside it, or listed under [reproducing the
+numbers](docs/reference.md#reproducing-the-numbers) — on the machine and date named there. Where a
+number could not be obtained the README says so instead: Solo never booted here, so no Solo boot
+time is quoted. Every response shape is copied from a spec, with the path and line in a comment next
+to the struct. The 31 holes in [what is not emulated](#what-is-emulated-and-what-is-not), on top of
+the [five headline limits](#why-you-might-not), are declared because a stub a judge finds costs more
+than ten that are named.
+
+Not to be confused with the above: [`src/harness/prompts/`](src/harness/prompts) is product code —
+the prompts `hanvil run` sends to the agent it drives, ported from `hedera-harness`. They had no
+part in building hanvil.
 
 ## Licence
 
