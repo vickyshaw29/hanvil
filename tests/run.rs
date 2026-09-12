@@ -24,12 +24,17 @@ fn fixture_repo(tag: &str) -> PathBuf {
         vec!["add", "-A"],
         vec!["commit", "-q", "--no-gpg-sign", "-m", "fixture"],
     ] {
-        let status = Command::new("git")
+        let out = Command::new("git")
             .args(&args)
             .current_dir(&root)
-            .status()
+            .output()
             .expect("git runs");
-        assert!(status.success(), "git {args:?} failed");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed in {}: {}",
+            root.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     root
 }
@@ -1213,7 +1218,7 @@ fn validate_gives_the_app_the_chain_and_the_signer() {
 /// signer's key file must not outlive the run either, on this path or any other.
 #[test]
 fn validate_runs_the_chain_tier_and_sweeps_the_signer_when_it_fails() {
-    let repo = fixture_repo("validate-chain");
+    let repo = fixture_repo("validate-impossible");
     std::fs::write(repo.join("generated.txt"), "ok\n").expect("write");
     std::fs::write(
         repo.join(".harness/spec-impossible.yaml"),
@@ -1334,5 +1339,38 @@ fn validate_runs_assert_alone_and_reports_like_upstream() {
         !repo.join(".harness/runs").exists(),
         "validate still writes no run"
     );
+    let _ = std::fs::remove_dir_all(repo);
+}
+
+/// `hanvil validate` on a recipe with `chainValidation` boots a node. Taking 7546 by default made
+/// it fail outright for anyone with `hanvil` already running in another terminal, which is how the
+/// node is normally used. A flag and the recipe still pin the ports when they name one.
+#[test]
+fn validate_does_not_fight_a_node_already_on_the_default_ports() {
+    // A plain listener occupies the port exactly as another hanvil would, with nothing to clean up.
+    let held: Vec<std::net::TcpListener> = [7546u16, 5551, 50211]
+        .iter()
+        .filter_map(|port| std::net::TcpListener::bind(("127.0.0.1", *port)).ok())
+        .collect();
+    if held.len() < 3 {
+        // Something on this machine already holds one of them; the test would prove nothing.
+        return;
+    }
+
+    let repo = fixture_repo("validate-ports");
+    std::fs::write(repo.join("generated.txt"), "ok\n").expect("write");
+    let output = Command::new(env!("CARGO_BIN_EXE_hanvil"))
+        .args(["validate", ".harness/spec.yaml"])
+        .current_dir(&repo)
+        .output()
+        .expect("hanvil runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "validate must not need the default ports:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(stdout.contains("passed=true"), "{stdout}");
+    drop(held);
     let _ = std::fs::remove_dir_all(repo);
 }

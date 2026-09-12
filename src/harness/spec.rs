@@ -383,6 +383,10 @@ pub(crate) struct ChainLocal {
     pub(crate) grpc_url: String,
     /// Mirror REST.
     pub(crate) mirror_url: String,
+    /// Whether the recipe wrote any of the three, or the loader filled all three in. `network:
+    /// local` always produces the block, so without this a defaulted 7546 is indistinguishable
+    /// from one the author asked for — and `hanvil validate` cannot choose a free port.
+    pub(crate) pinned: bool,
 }
 
 /// An account named in a chain assertion.
@@ -1244,6 +1248,11 @@ fn read_chain_validation(parsed: &Map<String, Value>) -> Result<Option<ChainVali
             rpc_url: local_url("rpcUrl", DEFAULT_LOCAL_RPC_URL),
             grpc_url: local_url("grpcUrl", DEFAULT_LOCAL_GRPC_URL),
             mirror_url: local_url("mirrorUrl", DEFAULT_LOCAL_MIRROR_URL),
+            pinned: ["rpcUrl", "grpcUrl", "mirrorUrl"].iter().any(|key| {
+                local_record
+                    .and_then(|r| read_optional_string(r, key))
+                    .is_some()
+            }),
         }),
         funding_hbar,
         sweep_back: record.get("sweepBack") != Some(&Value::Bool(false)),
@@ -2024,6 +2033,8 @@ mod tests {
                 rpc_url: "http://localhost:7546".into(),
                 grpc_url: "localhost:50211".into(),
                 mirror_url: "http://localhost:5551".into(),
+                // `network: local` alone: the loader filled these in, the author did not ask.
+                pinned: false,
             })
         );
         assert_eq!(chain.funding_hbar, 10.0);

@@ -174,7 +174,14 @@ pub(crate) async fn validate(
 
     let _ = std::fs::create_dir_all(&output_dir);
     // The app gets the chain and the signer `run` would give it, or it cannot start.
-    let app = chain_for_app(&node_args, spec, &workspace, &output_dir.join("chain")).await?;
+    let app = chain_for_app(
+        &node_args,
+        spec,
+        &workspace,
+        &output_dir.join("chain"),
+        Ports::Ephemeral,
+    )
+    .await?;
     // Past this point the signer's key file is on disk. Nothing may use `?` or return until
     // `teardown` has swept it and the directory is gone, which is why the rest is a closure whose
     // result is only unwrapped after the cleanup below.
@@ -354,7 +361,14 @@ pub(crate) async fn validate_semantic(
         artifacts::Layout::reopen(&run_directory, &spec.jsonl_log_path, &spec.notes_log_path)?;
     let attempt = artifacts::last_attempt_number(&logs_directory) + 1;
 
-    let app = chain_for_app(&node_args, spec, &workspace, &run_directory).await?;
+    let app = chain_for_app(
+        &node_args,
+        spec,
+        &workspace,
+        &run_directory,
+        Ports::Ephemeral,
+    )
+    .await?;
     let local = app.local.clone();
     let signer = app.signer.clone();
     log_phase(
@@ -455,6 +469,7 @@ async fn chain_for_app(
     spec: &Spec,
     workspace: &Path,
     signer_dir: &Path,
+    ports: Ports,
 ) -> Result<AppChain, Error> {
     if spec
         .chain_validation
@@ -463,7 +478,7 @@ async fn chain_for_app(
     {
         return Err(Error::TestnetRefused);
     }
-    let node = boot_node(node_args, spec, workspace).await?;
+    let node = boot_node(node_args, spec, workspace, ports).await?;
     let local = LocalChain {
         rpc_url: format!("http://{}", node.rpc.local_addr),
         mirror_url: format!("http://{}", node.mirror.local_addr),
@@ -551,14 +566,30 @@ pub(crate) struct Outcome {
 /// Which port a listener gets: an explicit flag wins, else the recipe's `local.*`, else the
 /// node's default. Clap cannot tell an explicit `--port 7546` from the default, so a flag that
 /// equals the default defers to the recipe.
-fn port_for(flag: u16, default: u16, recipe_url: Option<&str>) -> u16 {
+/// Which port a subcommand falls back to when neither a flag nor the recipe names one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Ports {
+    /// The documented 7546/5551/50211. `hanvil run` is watched while it works and a developer
+    /// reaches for `curl localhost:7546`.
+    Documented,
+    /// Whatever the OS hands out. `validate` and `validate-semantic` run to completion and nobody
+    /// talks to their chain but the app, which is told the URLs through `HANVIL_*`. Taking 7546
+    /// would fail the check outright for anyone with a node already running, which is how the
+    /// node is normally used.
+    Ephemeral,
+}
+
+fn port_for(flag: u16, default: u16, recipe_url: Option<&str>, ports: Ports) -> u16 {
     if flag != default {
         return flag;
     }
     recipe_url
         .and_then(|url| url.rsplit(':').next())
         .and_then(|port| port.trim_end_matches('/').parse().ok())
-        .unwrap_or(default)
+        .unwrap_or(match ports {
+            Ports::Documented => default,
+            Ports::Ephemeral => 0,
+        })
 }
 
 /// `hanvil run`, end to end.
@@ -590,7 +621,7 @@ pub(crate) async fn run(args: RunArgs, node_args: NodeArgs) -> Result<Outcome, E
         .or_else(env::max_attempts)
         .unwrap_or(spec.max_attempts);
 
-    let node = boot_node(&node_args, spec, &workspace).await?;
+    let node = boot_node(&node_args, spec, &workspace, Ports::Documented).await?;
     let local = LocalChain {
         rpc_url: format!("http://{}", node.rpc.local_addr),
         mirror_url: format!("http://{}", node.mirror.local_addr),
@@ -612,15 +643,33 @@ pub(crate) async fn run(args: RunArgs, node_args: NodeArgs) -> Result<Outcome, E
 
 /// Boot the node: `--state`-style reload of the last attempt's chain on `--continue` is done
 /// in `drive`, after the session says which dump.
-async fn boot_node(node_args: &NodeArgs, spec: &Spec, workspace: &Path) -> Result<Node, Error> {
+async fn boot_node(
+    node_args: &NodeArgs,
+    spec: &Spec,
+    workspace: &Path,
+    ports: Ports,
+) -> Result<Node, Error> {
+    // Only a recipe that named its URLs pins the ports; `network: local` alone gets the block
+    // filled in with the defaults, which is not the author asking for 7546.
     let local = spec
         .chain_validation
         .as_ref()
-        .and_then(|c| c.local.as_ref());
+        .and_then(|c| c.local.as_ref())
+        .filter(|local| local.pinned);
     let mut args = node_args.clone();
-    args.port = port_for(args.port, 7546, local.map(|l| l.rpc_url.as_str()));
-    args.mirror_port = port_for(args.mirror_port, 5551, local.map(|l| l.mirror_url.as_str()));
-    args.grpc_port = port_for(args.grpc_port, 50211, local.map(|l| l.grpc_url.as_str()));
+    args.port = port_for(args.port, 7546, local.map(|l| l.rpc_url.as_str()), ports);
+    args.mirror_port = port_for(
+        args.mirror_port,
+        5551,
+        local.map(|l| l.mirror_url.as_str()),
+        ports,
+    );
+    args.grpc_port = port_for(
+        args.grpc_port,
+        50211,
+        local.map(|l| l.grpc_url.as_str()),
+        ports,
+    );
     let clock: Arc<dyn Clock> = Arc::new(state::time::SystemClock);
     let chain = node::load_or_genesis(&args, clock.as_ref())?;
     let _ = workspace;
@@ -1340,10 +1389,33 @@ mod tests {
 
     #[test]
     fn a_flag_that_equals_the_default_defers_to_the_recipe() {
-        assert_eq!(port_for(7546, 7546, Some("http://localhost:7999")), 7999);
-        assert_eq!(port_for(0, 7546, Some("http://localhost:7999")), 0);
-        assert_eq!(port_for(7546, 7546, None), 7546);
-        assert_eq!(port_for(50211, 50211, Some("localhost:50299")), 50299);
-        assert_eq!(port_for(5551, 5551, Some("http://127.0.0.1:5552/")), 5552);
+        use Ports::Documented as D;
+        assert_eq!(port_for(7546, 7546, Some("http://localhost:7999"), D), 7999);
+        assert_eq!(port_for(0, 7546, Some("http://localhost:7999"), D), 0);
+        assert_eq!(port_for(7546, 7546, None, D), 7546);
+        assert_eq!(port_for(50211, 50211, Some("localhost:50299"), D), 50299);
+        assert_eq!(
+            port_for(5551, 5551, Some("http://127.0.0.1:5552/"), D),
+            5552
+        );
+    }
+
+    /// `validate` and `validate-semantic` run to completion and nobody talks to their chain but
+    /// the app, which is handed the URLs. Taking 7546 by default failed the check outright for
+    /// anyone with a node already running — which is how the node is normally used.
+    #[test]
+    fn validate_falls_back_to_an_ephemeral_port_but_a_flag_and_the_recipe_still_win() {
+        use Ports::Ephemeral as E;
+        assert_eq!(port_for(7546, 7546, None, E), 0, "nothing named: any port");
+        assert_eq!(
+            port_for(7546, 7546, Some("http://localhost:7999"), E),
+            7999,
+            "the recipe still pins it"
+        );
+        assert_eq!(
+            port_for(7999, 7546, None, E),
+            7999,
+            "an explicit flag still wins"
+        );
     }
 }
