@@ -37,6 +37,19 @@ const FINGERPRINT_FILES: [&str; 2] = ["yarn.lock", "package.json"];
 /// config that cannot be read or parsed is a recipe problem, not a finding against the app.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
+    /// A validator config is not there. The recipe defaults both paths, so a project with no
+    /// `validators:` block still points at them, and a bare io error is the first thing a new
+    /// user sees.
+    #[error(
+        "{path} is missing. Create it with {shape}, or point the matching `validators.` key at \
+         another file. `hanvil doctor` checks this and the rest of the recipe."
+    )]
+    MissingValidator {
+        /// The file the recipe named.
+        path: PathBuf,
+        /// The smallest content that satisfies it.
+        shape: &'static str,
+    },
     /// A validator config could not be read.
     #[error("reading {path}: {source}")]
     Read {
@@ -142,10 +155,19 @@ fn forbidden_files(workspace: &Path, forbidden: &[String]) -> Vec<Finding> {
         .collect()
 }
 
-fn read_json_config(path: &Path) -> Result<Value, Error> {
-    let raw = std::fs::read_to_string(path).map_err(|source| Error::Read {
-        path: path.to_path_buf(),
-        source,
+fn read_json_config(path: &Path, shape: &'static str) -> Result<Value, Error> {
+    let raw = std::fs::read_to_string(path).map_err(|source| {
+        if source.kind() == std::io::ErrorKind::NotFound {
+            Error::MissingValidator {
+                path: path.to_path_buf(),
+                shape,
+            }
+        } else {
+            Error::Read {
+                path: path.to_path_buf(),
+                source,
+            }
+        }
     })?;
     serde_json::from_str(&raw).map_err(|source| Error::Parse {
         path: path.to_path_buf(),
@@ -164,7 +186,7 @@ fn string_items(value: Option<&Value>) -> Vec<&str> {
 
 /// `validation/index.ts:152-234`: `validators/static.json`.
 fn static_config(workspace: &Path, static_path: &Path) -> Result<Vec<Finding>, Error> {
-    let config = read_json_config(static_path)?;
+    let config = read_json_config(static_path, "{\"jsonAssertions\": []}")?;
     let mut findings = Vec::new();
 
     for assertion in config
@@ -429,7 +451,7 @@ async fn commands(
     commands_path: &Path,
     install_cache_path: Option<&Path>,
 ) -> Result<(Vec<Finding>, Vec<Execution>), Error> {
-    let config = read_json_config(commands_path)?;
+    let config = read_json_config(commands_path, "{\"commands\": []}")?;
     let mut findings = Vec::new();
     let mut results = Vec::new();
     for entry in config
