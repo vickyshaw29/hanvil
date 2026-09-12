@@ -72,6 +72,8 @@ pub enum Status {
     InvalidTransactionDuration,
     /// 7 — a required signature is missing or does not verify.
     InvalidSignature,
+    /// 8 — the memo is longer than the network accepts.
+    MemoTooLong,
     /// 10 — the payer cannot cover the fee.
     InsufficientPayerBalance,
     /// 11 — this transaction id already reached consensus.
@@ -80,6 +82,8 @@ pub enum Status {
     NotSupported,
     /// 15 — an account id in the body names no account.
     InvalidAccountId,
+    /// 64 — the serialised `Transaction` is larger than `transactionMaxBytes`.
+    TransactionOversize,
     /// 16 — a contract id that names no contract.
     InvalidContractId,
     /// 17 — the body carries no usable `transactionID`.
@@ -132,11 +136,13 @@ impl Status {
             Self::InvalidTransactionStart => 5,
             Self::InvalidTransactionDuration => 6,
             Self::InvalidSignature => 7,
+            Self::MemoTooLong => 8,
             Self::InsufficientPayerBalance => 10,
             Self::DuplicateTransaction => 11,
             Self::NotSupported => 13,
             Self::InvalidAccountId => 15,
             Self::InvalidContractId => 16,
+            Self::TransactionOversize => 64,
             Self::InvalidTransactionId => 17,
             Self::ReceiptNotFound => 18,
             Self::RecordNotFound => 19,
@@ -169,10 +175,12 @@ impl Status {
             Self::InvalidTransactionStart => "INVALID_TRANSACTION_START",
             Self::InvalidTransactionDuration => "INVALID_TRANSACTION_DURATION",
             Self::InvalidSignature => "INVALID_SIGNATURE",
+            Self::MemoTooLong => "MEMO_TOO_LONG",
             Self::InsufficientPayerBalance => "INSUFFICIENT_PAYER_BALANCE",
             Self::DuplicateTransaction => "DUPLICATE_TRANSACTION",
             Self::NotSupported => "NOT_SUPPORTED",
             Self::InvalidAccountId => "INVALID_ACCOUNT_ID",
+            Self::TransactionOversize => "TRANSACTION_OVERSIZE",
             Self::InvalidContractId => "INVALID_CONTRACT_ID",
             Self::InvalidTransactionId => "INVALID_TRANSACTION_ID",
             Self::ReceiptNotFound => "RECEIPT_NOT_FOUND",

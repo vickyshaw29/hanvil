@@ -574,3 +574,29 @@ seconds: 0.167 0.089 0.084 0.061 0.063 0.068 0.090 0.081 0.079 — median **0.08
 after the rail boots is the outlier; it pays for the facilitator's `/supported` fetch and the SDK
 client. Five calls against the deployed testnet service through Blocky402: 4.911 5.855 5.829 4.710
 4.514 — median **4.91**. The README now quotes the medians and says how many calls each is.
+
+## HAPI size limits (2026-09-12)
+
+`transactionMaxBytes` is **6144**, from `proto/services/transaction.proto:155` ("currently 6144
+bytes"). `hiero-local-node` sets `transactionMaxBytes, 30720` in
+`compose-network/network-node/settings.txt:22`, but that is the platform's ceiling on a gossip
+event, not HAPI's on a transaction. The services limit is the one a client is refused by:
+`research/hiero-sdk-rust/tests/e2e/transaction/hip_1300.rs:66-101`
+(`should_not_create_transaction_with_more_than_6kbs_of_data_in_a_file_if_normal_account_is_used`)
+expects `TRANSACTION_OVERSIZE` for a 10 KiB payload from a non-system payer. Hanvil enforces 6144
+in `src/hapi/wire.rs`; `eth_sendRawTransaction` does not pass through there, so a contract deployed
+over JSON-RPC is unaffected.
+
+Memo is **100 bytes**, from `proto/services/response_code.proto:70` ("Transaction memo size
+exceeded 100 bytes"). That is the only place any of these numbers appears numerically in the
+vendored protobuf or the `research/` clones.
+
+`TRANSFER_LIST_SIZE_LIMIT_EXCEEDED` (92) exists in `response_code.proto:503`, but the count it
+enforces (`ledger.transfers.maxLen`) is in none of them — the `hiero-consensus-node` clone carries
+protobuf only, with no properties files. Not enforced; a list long enough to matter is refused on
+the transaction's size instead.
+
+Correction to an audit claim of the same day: "a 4,000-leg transfer list is accepted" was a probe
+artifact. `@hiero-ledger/sdk`'s `addHbarTransfer` sums repeated transfers to one account, so a loop
+adding 2,000 debits and 2,000 credits between two accounts sends **two** legs in 90 bytes. With
+2,001 distinct accounts the same transaction is 32,084 bytes and is refused.

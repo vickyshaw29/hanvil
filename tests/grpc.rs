@@ -413,3 +413,135 @@ async fn a_body_hanvil_does_not_execute_is_refused_with_not_supported() {
 
     node.shutdown();
 }
+
+/// Hedera refuses a transaction larger than `transactionMaxBytes` and a memo over 100 bytes
+/// before consensus. Hanvil accepted both, so a topic message of any size and a 5,000-byte memo
+/// succeeded here and failed on testnet — an emulator more permissive than the network it emulates
+/// is the one failure a caller cannot detect locally.
+#[tokio::test]
+async fn a_transaction_over_the_size_limits_is_refused_before_consensus() {
+    const TRANSACTION_OVERSIZE: i32 = 64;
+    const MEMO_TOO_LONG: i32 = 8;
+    const OK: i32 = 0;
+
+    let node = common::Node::boot();
+    let endpoint = format!("http://127.0.0.1:{}", node.grpc_port);
+    let mut crypto = CryptoServiceClient::connect(endpoint.clone())
+        .await
+        .expect("the gRPC listener accepts h2c");
+    let mut consensus =
+        proto::consensus_service_client::ConsensusServiceClient::connect(endpoint.clone())
+            .await
+            .expect("the gRPC listener accepts h2c");
+
+    let transfer = |memo: &str| {
+        let mut body = body(
+            now(),
+            proto::transaction_body::Data::CryptoTransfer(proto::CryptoTransferTransactionBody {
+                transfers: Some(proto::TransferList {
+                    account_amounts: vec![
+                        proto::AccountAmount {
+                            account_id: Some(account_id(PAYER)),
+                            amount: -1,
+                            ..Default::default()
+                        },
+                        proto::AccountAmount {
+                            account_id: Some(account_id(RECIPIENT)),
+                            amount: 1,
+                            ..Default::default()
+                        },
+                    ],
+                }),
+                ..Default::default()
+            }),
+        );
+        body.memo = memo.to_string();
+        sign_with(&body, &[PAYER_KEY])
+    };
+
+    assert_eq!(
+        crypto
+            .crypto_transfer(transfer(&"m".repeat(100)))
+            .await
+            .expect("routed")
+            .into_inner()
+            .node_transaction_precheck_code,
+        OK,
+        "a memo of exactly 100 bytes is still accepted"
+    );
+    assert_eq!(
+        crypto
+            .crypto_transfer(transfer(&"m".repeat(101)))
+            .await
+            .expect("routed")
+            .into_inner()
+            .node_transaction_precheck_code,
+        MEMO_TOO_LONG,
+        "101 bytes of memo is one too many"
+    );
+
+    // The message a caller would chunk. The SDK splits at 1 KiB; a client that does not is told
+    // why rather than being let through.
+    let message = sign_with(
+        &body(
+            now(),
+            proto::transaction_body::Data::ConsensusSubmitMessage(
+                proto::ConsensusSubmitMessageTransactionBody {
+                    topic_id: Some(proto::TopicId {
+                        shard_num: 0,
+                        realm_num: 0,
+                        topic_num: 1_000,
+                    }),
+                    message: vec![b'z'; 100_000],
+                    ..Default::default()
+                },
+            ),
+        ),
+        &[PAYER_KEY],
+    );
+    assert_eq!(
+        consensus
+            .submit_message(message)
+            .await
+            .expect("routed")
+            .into_inner()
+            .node_transaction_precheck_code,
+        TRANSACTION_OVERSIZE,
+        "a 100 KB topic message is refused on the transaction's size"
+    );
+
+    // A transfer list long enough to blow the size limit. Hedera caps the *count* too, with
+    // TRANSFER_LIST_SIZE_LIMIT_EXCEEDED; that number is in neither the vendored protobuf nor the
+    // cloned sources, so it is not enforced here and the size is what refuses this one. Note the
+    // legs must name distinct accounts: the SDK sums repeated transfers to one account into a
+    // single leg, so a loop over two accounts sends two legs and 90 bytes, not four thousand.
+    let legs: Vec<proto::AccountAmount> = (0..4_000)
+        .map(|index| proto::AccountAmount {
+            account_id: Some(account_id(if index % 2 == 0 { PAYER } else { RECIPIENT })),
+            amount: if index % 2 == 0 { -1 } else { 1 },
+            ..Default::default()
+        })
+        .collect();
+    let long = sign_with(
+        &body(
+            now(),
+            proto::transaction_body::Data::CryptoTransfer(proto::CryptoTransferTransactionBody {
+                transfers: Some(proto::TransferList {
+                    account_amounts: legs,
+                }),
+                ..Default::default()
+            }),
+        ),
+        &[PAYER_KEY],
+    );
+    assert_eq!(
+        crypto
+            .crypto_transfer(long)
+            .await
+            .expect("routed")
+            .into_inner()
+            .node_transaction_precheck_code,
+        TRANSACTION_OVERSIZE,
+        "a 4,000-leg transfer list is refused on the transaction's size"
+    );
+}

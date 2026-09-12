@@ -25,6 +25,20 @@ const FUTURE_TOLERANCE_SECS: i64 = 60;
 /// Bounds on `transactionValidDuration` (`transaction.proto`: the network caps it at 180 s).
 const MAX_VALID_DURATION_SECS: u64 = 180;
 
+/// `transactionMaxBytes` (`proto/services/transaction.proto:155`: "currently 6144 bytes").
+///
+/// `hiero-local-node` sets 30720 in `compose-network/network-node/settings.txt:22`, but that is
+/// the platform's ceiling on a gossip event, not HAPI's on a transaction; the services limit is
+/// what a client is refused by, and `hiero-sdk-rust`'s own e2e test expects `TRANSACTION_OVERSIZE`
+/// for a 10 KiB payload. `eth_sendRawTransaction` does not pass through here, so a contract
+/// deployed over JSON-RPC is unaffected — on Hedera a body that large goes through HFS, which
+/// Hanvil does not serve.
+const MAX_TRANSACTION_BYTES: usize = 6_144;
+
+/// `memo` bound (`proto/services/response_code.proto:70`: "Transaction memo size exceeded 100
+/// bytes"). Bytes, not characters: the field is UTF-8 and the network counts its length.
+const MAX_MEMO_BYTES: usize = 100;
+
 /// Decode, precheck, verify signatures and apply. `Err` is the precheck code the node returns
 /// instead of `OK`; `Ok` means the transaction reached consensus and the record is stored.
 ///
@@ -78,6 +92,11 @@ fn precheck_and_apply(
         // `Transaction` is not read.
         return Err(Status::InvalidTransaction);
     }
+    // Before the decode: a transaction over the limit is refused on its length alone, and
+    // parsing it first is work the network does not do either.
+    if envelope.encoded_len() > MAX_TRANSACTION_BYTES {
+        return Err(Status::TransactionOversize);
+    }
     let signed = proto::SignedTransaction::decode(envelope.signed_transaction_bytes.as_slice())
         .map_err(|_| Status::InvalidTransaction)?;
     let body = proto::TransactionBody::decode(signed.body_bytes.as_slice())
@@ -112,6 +131,10 @@ fn precheck_and_apply(
         .ok_or(Status::PayerAccountNotFound)?;
     if deleted {
         return Err(Status::PayerAccountDeleted);
+    }
+
+    if body.memo.len() > MAX_MEMO_BYTES {
+        return Err(Status::MemoTooLong);
     }
 
     let decoded = decode_body(body.data.as_ref())?;
@@ -538,7 +561,17 @@ mod tests {
     /// Each precheck in the order `docs/code-plan.md` §5 fixes, one body that fails only it.
     #[test]
     fn prechecks_map_to_their_response_codes() {
-        let cases: [Case; 6] = [
+        let cases: [Case; 8] = [
+            (
+                "a memo over 100 bytes",
+                |body| body.memo = "m".repeat(101),
+                Status::MemoTooLong,
+            ),
+            (
+                "a body that pushes the transaction over 6144 bytes",
+                |body| body.memo = "m".repeat(MAX_TRANSACTION_BYTES + 1),
+                Status::TransactionOversize,
+            ),
             (
                 "a node this network does not run",
                 |body| body.node_account_id = Some(to_account_id(EntityId(4))),
