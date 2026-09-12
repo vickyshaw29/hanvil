@@ -274,6 +274,30 @@ hanvil doctor          # ✔ on every line under `env -i PATH="$PATH" HOME="$HOM
 hanvil run             # needs `claude` on PATH, Node 20+ and npx
 ```
 
+### One x402 paid request, on each rail
+
+The rail on hanvil, from `examples/toll`, with the payer and facilitator the `hanvil toll` banner
+prints:
+
+```
+hanvil toll                                    # another terminal
+for i in $(seq 1 9); do yarn pay; done | grep -o 'in [0-9.]*s'
+```
+
+2026-09-12: 0.167 0.089 0.084 0.061 0.063 0.068 0.090 0.081 0.079 — **median 0.081 s**. The first
+call after the rail boots pays for the facilitator's `/supported` fetch and the SDK client, and is
+the outlier every time.
+
+The same call against the deployed service, settling on Hedera testnet through Blocky402:
+
+```
+set -a; . ~/.hanvil/toll-testnet.env; set +a
+for i in 1 2 3 4 5; do TOLL_URL=https://hanvil-toll-production.up.railway.app yarn pay; done
+```
+
+2026-09-12: 4.911 5.855 5.829 4.710 4.514 — **median 4.91 s**. Each of those is a real
+`CryptoTransfer` on testnet, and each wrote an `x402.receipt.v1` message to topic `0.0.10497255`.
+
 ### The TypeScript harness against hanvil
 
 With the [PR #48](https://github.com/hedera-dev/hedera-harness/pull/48) branch built:

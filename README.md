@@ -49,7 +49,7 @@ Started in 2 ms
   phases that move the chain clock a week between assertion sets.
 - Any attempt's chain boots again from its state dump, so you can replay the network as an attempt
   left it.
-- `hanvil toll` serves an x402 payment rail on the same chain. A paid request settles in 0.112 s,
+- `hanvil toll` serves an x402 payment rail on the same chain. A paid request settles in 0.081 s,
   with no facilitator to sign up for.
 - One binary, 10 MB, one process. The node has no runtime dependency.
 
@@ -114,8 +114,8 @@ hanvil's own numbers, same machine:
 | --- | --- | --- |
 | Tests, all green | 214 | `cargo test --release` |
 | Accounts pre-funded | 30, 10,000 ℏ each | the boot banner |
-| One x402 paid request, settled | 0.112 s | `yarn pay` against `hanvil toll` |
-| The same request, on Hedera testnet | 5.80 s | `TOLL_URL=…up.railway.app yarn pay` |
+| One x402 paid request, settled on hanvil | 0.081 s | `yarn pay` against `hanvil toll`, median of 9 |
+| The same request, settled on Hedera testnet | 4.91 s | `TOLL_URL=…up.railway.app yarn pay`, median of 5 |
 | `hanvil doctor`, every check | 60 ms | `time hanvil doctor` in a copy of `tests/harness` |
 | `hanvil run`, one attempt, fake agent | 0.23 s | `time hanvil run --no-skills` in the same copy |
 | Signer provisioned on the chain | 152 µs | `chain_signer_provisioned.durationMicros` |
@@ -483,7 +483,7 @@ payTo             0.0.1003  where a settled toll lands
 ```
 
 An x402 payment on Hedera is a `CryptoTransfer` the client partially signs and the facilitator
-co-signs and submits as fee payer. One paid call settles in 0.112 s, read off hanvil's mirror:
+co-signs and submits as fee payer. One paid call settles in 0.081 s, read off hanvil's mirror:
 
 ```
 0.0.1004-1789194758-592048710 CRYPTOTRANSFER SUCCESS
@@ -537,13 +537,14 @@ One switch picks the rail, and the same service runs on both:
 | `https://api.testnet.blocky402.com` | Hedera testnet | a deployed service |
 
 That second row is deployed: **https://hanvil-toll-production.up.railway.app**, the same directory
-with `HEDERA_NETWORK=testnet`. One paid call from outside settles in 5.80 s through Blocky402 —
+with `HEDERA_NETWORK=testnet`. One paid call from outside settles in 4.91 s through Blocky402 —
 [`0.0.7162784@1789204637.167233288`](https://hashscan.io/testnet/transaction/0.0.7162784@1789204637.167233288),
 payer `0.0.10497245` −100,000 tinybar, payTo `0.0.10497252` +100,000, and the 268,330-tinybar fee
 paid by the facilitator, which is the whole point of the scheme. Every settled call writes an
 `x402.receipt.v1` message to [topic `0.0.10497255`](https://hashscan.io/testnet/topic/0.0.10497255),
 so the payment history is provable from the chain rather than from the service's logs. The same
-`yarn pay`, one environment variable apart, is 0.071 s against hanvil.
+`yarn pay`, one environment variable apart, is 0.081 s against hanvil — sixty times faster, and
+free.
 
 `examples/toll/.harness/` is a recipe that rebuilds the metered service from `hedera-harness`'s own
 x402 PRD, with chain assertions the app cannot fake: a topic created and written to, at least one

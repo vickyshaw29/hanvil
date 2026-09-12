@@ -1,7 +1,7 @@
 # Toll — x402 payments on the local chain
 
 A metered API gated by [x402](https://x402.org), settled in HBAR. On `hanvil` it settles in
-0.112 s against a chain that boots in 2 ms and costs nothing. On Hedera testnet the same service
+0.081 s against a chain that boots in 2 ms and costs nothing. On Hedera testnet the same service
 settles through the [Blocky402](https://blocky402.com) facilitator. One environment variable
 picks the rail.
 
@@ -136,7 +136,7 @@ payment-required: …"network":"hedera:testnet","amount":"100000","asset":"0.0.0
                     "payTo":"0.0.10497252","extra":{"feePayer":"0.0.7162784"}…
 
 $ TOLL_URL=https://hanvil-toll-production.up.railway.app yarn pay
-[agent] paid request answered 200 in 5.804s
+[agent] paid request answered 200 in 5.804s          # one call; five of them median 4.91 s
 [agent] settlement SUCCESS 0.0.7162784@1789204637.167233288
 ```
 
@@ -151,8 +151,8 @@ Read back off the public mirror, not off this service's logs:
 | Fee | 268,330 tinybar, paid by Blocky402's fee payer `0.0.7162784` |
 
 The fee line is the point of the scheme: the payer signs a transfer it never submits and never pays
-the fee for. Measured 2026-09-12 — 5.80 s against testnet, 0.071 s against hanvil. Same code, same
-`yarn pay`, one environment variable apart.
+the fee for. Measured 2026-09-12 — 4.91 s against testnet, median of five calls, against 0.081 s
+on hanvil, median of nine. Same code, same `yarn pay`, one environment variable apart.
 
 ## Deploying the testnet rail
 

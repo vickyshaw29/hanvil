@@ -566,3 +566,11 @@ hanvil's own mirror, shows the fee-payer model: `0.0.1002 -100000` (payer), `0.0
 (payTo), `0.0.1004 -10000` (facilitator, the fee), `0.0.98 +10000`. A replayed
 `PAYMENT-SIGNATURE` header is refused `DUPLICATE_TRANSACTION` (11) before consensus: x402 reports
 `transaction_failed`, hanvil's mirror holds no row for it, and `hanvil_rejections` has it.
+
+### x402 settlement, re-measured 2026-09-12 15:20 IST
+
+The 0.112 s above was a single call. Nine consecutive `yarn pay` calls against `hanvil toll`, in
+seconds: 0.167 0.089 0.084 0.061 0.063 0.068 0.090 0.081 0.079 — median **0.081**. The first call
+after the rail boots is the outlier; it pays for the facilitator's `/supported` fetch and the SDK
+client. Five calls against the deployed testnet service through Blocky402: 4.911 5.855 5.829 4.710
+4.514 — median **4.91**. The README now quotes the medians and says how many calls each is.
