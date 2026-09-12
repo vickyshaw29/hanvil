@@ -121,6 +121,25 @@ server scheme, the client signer and the facilitator, so `hedera:localnet` is re
 A receipt therefore records `chain` as well as `network`: without it a local receipt would claim
 testnet for a payment that never left the machine.
 
+## Deploying the testnet rail
+
+`Dockerfile` builds this service alone. On testnet the facilitator is Blocky402 and the mirror is
+the public one, so nothing in the image needs `hanvil`; `src/facilitator.ts` is not started. The
+service binds every interface and takes `PORT` from the environment, which is what a host platform
+injects.
+
+```
+docker build -t toll examples/toll
+docker run -p 4021:4021 \
+  -e HEDERA_NETWORK=testnet \
+  -e HEDERA_ACCOUNT_ID=0.0.N -e HEDERA_PRIVATE_KEY=0x… -e PAY_TO=0.0.M \
+  -e TOLL_TOPIC_ID=0.0.T toll
+```
+
+Then point the paying agent at it: `TOLL_URL=https://your-host yarn pay`. It prints the settlement
+transaction id and its HashScan link. `config.ts` throws and names any variable that is missing
+rather than defaulting to something that would reach the wrong network.
+
 ## Not covered
 
 - A native Rust facilitator. `src/facilitator.ts` needs Node, as `hanvil run` needs an agent CLI
