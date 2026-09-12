@@ -95,6 +95,19 @@ What the stack buys is not free. It runs the real consensus node, the real mirro
 relay, and hanvil emulates them. Nothing here says the stack is badly built. It says an inner loop
 should not cost 50 seconds and 3.8 GB.
 
+It is also being retired. Hedera announced `hiero-local-node`'s deprecation in March 2026 on a
+six-month transition that completes this month — "no further updates, bug fixes, or support". The
+replacement is [`hiero-ledger/solo`](https://github.com/hiero-ledger/solo), which runs the same
+network on Kubernetes: `npm i -g @hiero-ledger/solo` takes 886 s and installs 362 MB over 223
+dependencies, a single-node network is 16 pods across 48 container images, and the stated minimum
+is 12 GB of RAM and 6 cores. **No Solo boot time was obtained here, and none is quoted.** `solo
+one-shot single deploy` failed after 732 s with `SOLO-3035 Failed to create Kubernetes pod`, on a
+machine where Docker Desktop's default 7.8 GB is below Solo's own preflight minimum and three
+`ghcr.io` pulls timed out; the partial cluster's 2.14 GB is a floor, not a measurement
+([docs/research.md](docs/research.md#solo-measured-2026-09-08)). Solo also moves the ports to
+37546 / 38081 / 35211. hanvil keeps `hiero-local-node`'s, which is what existing configs and the
+SDK's `forLocalNode()` already point at.
+
 hanvil's own numbers, same machine:
 
 | | | how it was measured |
