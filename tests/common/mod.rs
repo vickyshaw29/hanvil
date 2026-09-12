@@ -252,3 +252,28 @@ fn submit(node: &Node, raw: String) -> Value {
     assert!(!receipt.is_null(), "receipt is available immediately");
     receipt
 }
+
+/// A legacy transaction offering `gas_price` weibar per gas, which the chain caps at the network
+/// price. Used to tell the price offered from the price paid.
+pub fn sign_legacy_offering(node: &Node, to: Address, gas_price: U256) -> String {
+    let nonce = hex_u64(&node.result("eth_getTransactionCount", json!([SENDER, "latest"])));
+    let tx = TxLegacy {
+        chain_id: Some(298),
+        nonce,
+        gas_price: gas_price.to::<u128>(),
+        gas_limit: 21_000,
+        to: TxKind::Call(to),
+        value: U256::ZERO,
+        input: Bytes::new(),
+    };
+    let key = k256::ecdsa::SigningKey::from_slice(&hex::decode(&KEY[2..]).unwrap()).unwrap();
+    let digest = tx.signature_hash();
+    let (sig, recovery) = key.sign_prehash_recoverable(digest.as_slice()).unwrap();
+    let r = U256::from_be_slice(&sig.r().to_bytes());
+    let s = U256::from_be_slice(&sig.s().to_bytes());
+    let signed = tx.into_signed(Signature::new(r, s, recovery.is_y_odd()));
+    format!(
+        "0x{}",
+        hex::encode(TxEnvelope::Legacy(signed).encoded_2718())
+    )
+}

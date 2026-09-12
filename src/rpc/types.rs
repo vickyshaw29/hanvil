@@ -351,6 +351,15 @@ pub fn tx_json(tx: &TxRecord) -> Value {
         }
         TxBody::Unsigned(unsigned) => unsigned_fields(&mut object, unsigned),
     }
+    // Last, over whatever the body rendered. Every transaction here is mined — `TxRecord` carries
+    // its receipt and hanvil has no pending pool — and for a mined transaction the spec's
+    // `gasPrice` is the price actually paid, `min(maxFeePerGas, baseFee + tip)`, not the ceiling
+    // the sender offered. `maxFeePerGas` still carries the ceiling. The mirror's
+    // `contract_results` already draws the same line (`mirror/contracts.rs`).
+    object.insert(
+        "gasPrice".into(),
+        json!(weibar_u64(tx.receipt.effective_gas_price)),
+    );
     Value::Object(object)
 }
 

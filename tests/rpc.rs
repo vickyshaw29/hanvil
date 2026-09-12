@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use common::{
     Node, SENDER, WEIBAR_PER_TINYBAR, counter_fixture, hex_u64, hex_u256, selector, send,
-    send_with_gas,
+    send_with_gas, sign_legacy_offering,
 };
 
 #[test]
@@ -614,4 +614,45 @@ fn hanvil_rejections_reports_what_no_receipt_records() {
         rows[0]["reason"]
     );
     node.shutdown();
+}
+
+/// `gasPrice` on a mined transaction is the price paid, not the ceiling the sender offered. It
+/// rendered `maxFeePerGas`, so a caller computing a fee as `gasPrice * gasUsed` overstated it by
+/// whatever margin the sender left — 20 % on a plain viem transaction. The receipt was already
+/// right; only the transaction object was wrong.
+#[test]
+fn gas_price_on_a_mined_transaction_is_the_price_paid() {
+    let node = Node::boot();
+    let network = hex_u256(&node.result("eth_gasPrice", json!([])));
+    let offered = network * U256::from(2);
+
+    let raw = sign_legacy_offering(&node, Address::ZERO, offered);
+    let hash = node.result("eth_sendRawTransaction", json!([raw]));
+    let receipt = node.result("eth_getTransactionReceipt", json!([hash]));
+    let tx = node.result("eth_getTransactionByHash", json!([hash]));
+
+    assert_eq!(
+        hex_u256(&receipt["effectiveGasPrice"]),
+        network,
+        "the chain charges the network price, not what was offered"
+    );
+    assert_eq!(
+        tx["gasPrice"], receipt["effectiveGasPrice"],
+        "the transaction reports the price it paid"
+    );
+    assert_ne!(
+        hex_u256(&tx["gasPrice"]),
+        offered,
+        "and not the price it offered"
+    );
+
+    // The same object inside a full block.
+    let block = node.result(
+        "eth_getBlockByNumber",
+        json!([receipt["blockNumber"].clone(), true]),
+    );
+    assert_eq!(
+        block["transactions"][0]["gasPrice"], receipt["effectiveGasPrice"],
+        "including the copy embedded in the block"
+    );
 }
