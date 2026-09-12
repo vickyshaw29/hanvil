@@ -1,0 +1,6 @@
+node_modules/
+.env
+.env.*
+.harness/runs/
+.harness/runtime/
+.harness/cache/
