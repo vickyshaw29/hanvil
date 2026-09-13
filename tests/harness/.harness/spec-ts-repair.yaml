@@ -1,0 +1,32 @@
+# For the upstream TypeScript harness (PR #48), not `hanvil run`. A fake agent that fails once:
+# on its first run it mines a block with eth_sendTransaction and forgets the required file; on
+# its second it writes the file. Run with --max-attempts 2 against a running `hanvil`. The run log
+# shows chain_snapshot_taken before attempt 1, chain_snapshot_reverted after it fails, and
+# eth_blockNumber is back where attempt 1 started. The attempt-1 tx hash is printed to the
+# generator log so you can ask the node for it afterwards: it answers null.
+schemaVersion: 3
+name: ts-repair-on-hanvil
+prd: .harness/prd.md
+generator:
+  provider: command
+  command: bash
+  args:
+    - -c
+    - |
+      if [ ! -f .attempt-marker ]; then
+        touch .attempt-marker
+        curl -s -X POST http://localhost:7546 -H 'content-type: application/json' \
+          -d '{"jsonrpc":"2.0","id":1,"method":"eth_sendTransaction","params":[{"from":"0x00000000000000000000000000000000000003ea","to":"0x0000000000000000000000000000000000000001","value":"0x2540be400"}]}'
+        echo
+      else
+        printf 'ok\n' > generated.txt
+      fi
+requiredFiles:
+  - generated.txt
+chainValidation:
+  enabled: true
+  network: local
+baseline:
+  commands:
+    - name: install
+      command: "true"

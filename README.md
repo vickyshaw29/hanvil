@@ -25,7 +25,7 @@ Started in 2 ms
 
 **[Measured](#measured)** · [Quickstart](#quickstart) · [Endpoints](#endpoints) ·
 [What is not emulated](#what-is-emulated-and-what-is-not) · [The harness](#hanvil-run--the-harness) ·
-[Toll](#hanvil-toll--x402-on-the-local-chain) · [Authorship](#authorship-and-ai-use) ·
+[Toll](#hanvil-toll--x402-on-the-local-chain) · [ETHOnline](#ethonline-2026) · [Authorship](#authorship-and-ai-use) ·
 [Reference](docs/reference.md)
 
 ## Why use it
@@ -530,6 +530,28 @@ Without the second, a repair attempt inherits whatever the previous attempt wrot
 recipe that mines three blocks per attempt and then fails, attempts end at block `0x3`, `0x6`,
 `0x9`; with it, `0x3`, `0x3`, `0x3`. #48 stacks on #47 and contains its commits.
 
+To watch #48 do it, run the recipe whose first attempt mines a block and forgets the required
+file, from the same fixture directory with `hanvil` still up:
+
+```
+node /tmp/harness/dist/index.js run .harness/spec-ts-repair.yaml --max-attempts 2
+```
+
+```
+[hedera-harness] Chain snapshot taken — attempt 1 — 0x0
+[hedera-harness] Attempt 1 FAILED — 1 open, 1 new
+[hedera-harness] Chain reverted — attempt 1 rolled back to 0x0
+[hedera-harness] Chain snapshot taken — attempt 2 — 0x1
+[hedera-harness] Attempt 2 PASSED — deterministic gates passed
+Run PASSED
+```
+
+`.harness/runs/harness.log.jsonl` carries `chain_snapshot_taken` and `chain_snapshot_reverted`
+with matching ids. The hash of the transaction attempt 1 sent is in `logs/generator-attempt-1.log`;
+`eth_getTransactionByHash` on it returns `null` and `eth_blockNumber` is back at `0x0`, because the
+block it was in no longer exists. On a node without `evm_snapshot`, `hiero-local-node` included, #48
+logs that and the run continues as it does today.
+
 ## `hanvil toll` — x402 on the local chain
 
 `hanvil toll` serves an [x402](https://x402.org) payment rail on the chain in this process: a
@@ -621,6 +643,16 @@ x402 PRD, with chain assertions the app cannot fake: a topic created and written
 `CRYPTOTRANSFER` settled, and `rejections: { atMost: 0 }` — an assertion that cannot be written
 against testnet at all, because there would be nothing to read. Details in
 [`examples/toll/README.md`](examples/toll/README.md).
+
+## ETHOnline 2026
+
+Submitted to two Hedera tracks. What each asks for, where it is in this repository, and where the
+[demo](https://ethglobal.com/showcase/hanvil-i4sqq) shows it:
+
+| Track | Asks for | Where it is | In the demo |
+| --- | --- | --- | --- |
+| Open Source — Improve the Hedera Harness | a contribution to `hedera-harness`, public repo, demo video | PRs [#47](https://github.com/hedera-dev/hedera-harness/pull/47) and [#48](https://github.com/hedera-dev/hedera-harness/pull/48) against `dev`; [`hanvil run`](#hanvil-run--the-harness), a Rust port of the harness; [reproduction from a fresh clone](#the-typescript-harness-on-hanvil), including the failing-attempt recipe | 0:59–1:27, the unmodified harness `doctor` and `run` against hanvil with nothing configured; 3:20, CI runs it on every commit with no secrets |
+| AI & Agentic Payments on Hedera | a live x402-gated service on Hedera and a client making a real paid request end to end | [`hanvil toll`](#hanvil-toll--x402-on-the-local-chain) on the local chain; the same service on testnet at [hanvil-toll-production.up.railway.app](https://hanvil-toll-production.up.railway.app); the client in `examples/toll` | 1:27–2:25, pay and replay on the local chain, the replay refused with `DUPLICATE_TRANSACTION`; 2:29–3:15, the paid request against the public URL, settled on testnet, on HashScan |
 
 ## How it is built
 
