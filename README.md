@@ -128,6 +128,17 @@ timestamp. CI asserts the median boot stays under 100 ms on ubuntu and macos run
 
 ## Quickstart
 
+A prebuilt binary for macOS on Apple Silicon is on the
+[release page](https://github.com/vickyshaw29/hanvil/releases/latest), with a `SHA256SUMS` to check
+it against:
+
+```
+curl -sL https://github.com/vickyshaw29/hanvil/releases/download/v0.1.0/hanvil-v0.1.0-darwin-arm64.tar.gz | tar xz
+./hanvil
+```
+
+Everything else builds from source with Rust 1.91 or newer, in about two minutes:
+
 ```
 cargo build --release
 ./target/release/hanvil
@@ -490,6 +501,10 @@ recipe that mines three blocks per attempt and then fails, attempts end at block
 `hanvil toll` serves an [x402](https://x402.org) payment rail on the chain in this process: a
 facilitator, a metered service, and three predefined accounts wired up as payer, destination and
 fee payer.
+
+The rail is the TypeScript service in [`examples/toll`](examples/toll): run `yarn install` there
+once (Node 20 or newer, with yarn on the PATH; `corepack enable` provides it), then start
+`hanvil toll` from the repository root, or name the directory with `hanvil toll DIR`.
 
 ```
 $ hanvil toll
