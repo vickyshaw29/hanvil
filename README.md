@@ -145,6 +145,10 @@ cargo build --release
 curl -s localhost:5551/api/v1/accounts/0.0.1012 | jq .balance
 ```
 
+To check the build rather than take it on trust: `cargo test --release` runs the Rust suite, and
+`cd tests/js && npm ci && npm test` runs viem over JSON-RPC and `@hiero-ledger/sdk` over gRPC
+against a running `hanvil`. Both are what CI runs.
+
 The accounts, their ids and their keys are `hiero-local-node`'s, byte for byte, so anything
 configured for it works unchanged. They are development keys. They must never hold value.
 
@@ -361,6 +365,23 @@ hanvil validate-semantic [SPEC]     # EVALUATE only, against the workspace as it
 hanvil init [DIR] [--repo URL] [--ref REF] [--template NAME] [--skip-install]
 ```
 
+The quickest way to see a run end to end is the bundled fixture, which drives a stand-in agent
+and passes in well under a second:
+
+```
+cp -r tests/harness /tmp/harness-demo && cd /tmp/harness-demo
+git init -q -b main && git add -A && git commit -q -m fixture
+hanvil doctor
+hanvil run --no-skills
+```
+
+`hanvil init` is the other path: it clones `scaffold-hbar` and writes a starter recipe whose
+generator is a real agent (`agent: claude`), so `hanvil run` there needs the `claude` CLI installed
+and signed in, and takes as long as an agent takes. Two things to know before running it:
+`hanvil run` refuses a working tree with uncommitted changes, so commit what `init` wrote first, and
+the scaffold ships a `husky` pre-commit hook that rejects a commit until the project is configured,
+so that first commit wants `git commit --no-verify`.
+
 Before GENERATE the chain is snapshotted — `Chain::snapshot()`, a clone under the lock, 5 µs.
 After a failed attempt with budget left it is reverted, so the repair starts on the chain the
 failed attempt started on, and the repair prompt says so. After every validation the chain is
@@ -483,6 +504,19 @@ chainValidation:
 Nothing is set in the environment — no `HEDERA_OPERATOR_ID`, no `HEDERA_OPERATOR_KEY`.
 `.github/workflows/ci.yml` runs this on every push with no secrets, and asserts the signer reached
 `network: local` rather than trusting the verdict.
+
+To reproduce it locally, build the harness from the branch that carries both PRs, lay out the same
+fixture, and point it at a running `hanvil`:
+
+```
+git clone -b feat/chain-snapshot-per-attempt https://github.com/vickyshaw29/hedera-harness /tmp/harness
+(cd /tmp/harness && npm ci && npm run build)
+cp -r tests/harness /tmp/ts-demo && cd /tmp/ts-demo
+git init -q -b main && git add -A && git commit -q -m fixture
+hanvil &                                   # in another terminal, or backgrounded like this
+node /tmp/harness/dist/index.js doctor .harness/spec.yaml
+node /tmp/harness/dist/index.js run .harness/spec.yaml
+```
 
 `network: "local"` is not in `hedera-harness` yet. It is two open PRs against
 `hedera-dev/hedera-harness` `dev`:
